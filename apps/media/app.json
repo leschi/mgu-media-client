@@ -1,0 +1,85 @@
+{
+  "id": "media",
+  "title": "Media Client",
+  "description": "Videos and music from your Media Media Server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Sign in with a code at media.tv/link, or enter the server's address and a token.",
+  "version": "0.1.0",
+  "vendor": "custom",
+  "loggingId": "OAMC",
+  "iconGlyph": "MC",
+  "internet": true,
+  "signals": {
+    "de.bmw.infotainment.controlelements.FrontCCU": {
+      "statusRotaryEncoderState": "rs",
+      "_optional": "the iDrive controller for the lists and the keyboard (touch still works without it)"
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "rs",
+      "_optional": "the speed: the video picture only while parked"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "statusGearboxDrive": "s",
+      "DataPowerTrain2": "s",
+      "_optional": "the selector position: the video picture only in P"
+    },
+    "org.genivi.am.commandinterface.CommandControl": {
+      "_instances": "1",
+      "_methods": ["connect", "disconnect", "getListMainSources", "getListMainSinks", "getListMainConnections"],
+      "_optional": "the sound: the app's source on the media sink"
+    },
+    "de.bmw.infotainment.entertainment.mediaplayer.MediaPlayer": {
+      "_instances": "OapGenericMedia",
+      "playerState": "r",
+      "currentItemTime": "r",
+      "_methods": ["playFile", "sendButtonEvent", "setTime"],
+      "_optional": "the sound: BMW's media player"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "canvas",
+      "title": "Media Client",
+      "buttons": [
+        ["BTN1", "Sign in"],
+        ["BTN2", "Enter by hand"],
+        ["BTN_PAGE", "Next page"],
+        ["BTN_SETTINGS", "Settings"]
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "target",
+      "label": "Video on",
+      "type": "choice",
+      "default": "map",
+      "options": [
+        ["map", "Cluster middle (between the gauges)"],
+        ["panel", "Whole cluster"],
+        ["hud", "Head-up display"]
+      ]
+    },
+    {
+      "key": "quality",
+      "label": "Video quality",
+      "type": "choice",
+      "default": "smooth",
+      "options": [
+        ["smooth", "Smooth (480x270, fits the cluster's upload limit)"],
+        ["sharp", "Sharp (640x360, may stutter)"]
+      ]
+    },
+    {
+      "key": "resume",
+      "label": "Resume videos where you stopped",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "signOut",
+      "label": "Sign out (forget the server and token)",
+      "type": "bool",
+      "default": false
+    }
+  ]
+}

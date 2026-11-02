@@ -1,0 +1,10 @@
+{
+  "name": "mgu-media-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A media client for the BMW MGU head unit (iDrive 7): video from Media Media Server on the instrument cluster or the HUD while parked, sound through BMW's media player",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/run.js"
+  }
+}
