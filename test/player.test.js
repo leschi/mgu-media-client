@@ -114,3 +114,30 @@ test('sound: on in a fresh file from the segment playing; the old one deleted; t
     assert.ok(Math.abs(v.position() - 21) < 0.1, 'clock follows base + elapsed: ' + v.position());
     fs.unlinkSync(nu); fs.rmdirSync(dir);
 });
+
+test('one cluster-render connection for every video: a target change drops the old layer, then makes the new one; no handlers left', async () => {
+    const EventEmitter = require('events');
+    const ops = [];
+    const c = new EventEmitter();
+    c.ready = true; c.targets = 'map:1088x480,panel:1920x720,hud:800x480';
+    let next = 1, connects = 0;
+    c.connect = () => { connects++; };
+    c.close = () => { ops.push('close'); };
+    c.video = (o) => { const r = next++; ops.push('video ' + o.target + ' #' + r); return r; };
+    c.frame = () => true;
+    c.set = () => {};
+    c.drop = (r) => { ops.push('drop #' + r); };
+    const base = c.listenerCount('layer');
+    const mk = (target) => new ClusterVideo({ url: 'http://x/v.m3u8', target, client: c, get, gate: { parked: () => true, why: () => '' } });
+    const hud = mk('hud');
+    await hud.start();
+    await wait(300);
+    hud.stop();
+    const panel = mk('panel');
+    await panel.start();
+    await wait(300);
+    assert.deepStrictEqual(ops, ['video hud #1', 'drop #1', 'video panel #2'], 'in order, on one socket, never closed');
+    panel.stop();
+    assert.strictEqual(c.listenerCount('layer'), base, 'the videos\' handlers gone');
+    assert.strictEqual(connects, 2, '(connect on a live client does nothing)');
+});

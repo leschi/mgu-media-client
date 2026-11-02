@@ -156,9 +156,12 @@ class ClusterVideo {
             this.cr = this.o.client || (this.target === 'cid' ? new ShmVideo(this.o.shmFile || SHM_FILE)
                 : new ClusterRender(this.o.app || 'mgu_vnc', this.o.socketPath || process.env.CLUSTER_RENDER_SOCKET));
             // (a reconnect: the client sends its layers again itself - ours stays ours; a new one would
-            // leave the old one stalled, and cluster-render takes 2 video layers in all)
-            this.cr.on('ready', () => this._event('cluster-render connected'));
-            this.cr.on('layer', (ref, state, reason) => {
+            // leave the old one stalled, and cluster-render takes 2 video layers in all). The handlers go
+            // at stop: a client shared by the app's videos (o.client) outlives this one
+            const on = (ev, fn) => { this.cr.on(ev, fn); this.crOff.push(() => this.cr && this.cr.removeListener && this.cr.removeListener(ev, fn)); };
+            this.crOff = [];
+            on('ready', () => this._event('cluster-render connected'));
+            on('layer', (ref, state, reason) => {
                 if (ref !== this.layer) return;
                 // BMW's own content in the slot (the map area: the cluster's own view) - since when, for the hint
                 if (/behind stock|parked/.test(reason || '') && state === 'waiting') { if (!this.stockSince) this.stockSince = Date.now(); }
@@ -167,8 +170,8 @@ class ClusterVideo {
                 const ev = 'layer ' + state + (reason ? ' (' + reason + ')' : '');
                 if (ev !== this.lastLayerEv) { this.lastLayerEv = ev; this._event(ev); }
             });
-            this.cr.on('refused', (op, ref, reason) => this._event('refused ' + op + ': ' + reason));
-            this.cr.on('budget', (cap, max, reason) => { this.budget = 'upload cap ' + cap + ' KB/s' + (reason ? ' (' + reason + ')' : ''); this._event(this.budget); });
+            on('refused', (op, ref, reason) => { if (!ref || ref === this.layer) this._event('refused ' + op + ': ' + reason); });
+            on('budget', (cap, max, reason) => { this.budget = 'upload cap ' + cap + ' KB/s' + (reason ? ' (' + reason + ')' : ''); this._event(this.budget); });
             this.cr.connect();
             this.state = 'buffering';
             this.audioWait = Date.now() + 15000;
@@ -186,6 +189,7 @@ class ClusterVideo {
         this.running = false;
         clearInterval(this.timer); this.timer = null;
         this._hide();
+        (this.crOff || []).forEach((off) => off()); this.crOff = [];
         if (this.cr && !this.o.client) { try { this.cr.close(); } catch (e) { /* closing */ } }
         this.cr = null;
         if (this.dec) { this.dec.release(); this.dec = null; }

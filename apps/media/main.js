@@ -25,6 +25,7 @@ const kbd = require('./keyboard');
 const png = require('./png');
 const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
+const { ClusterRender } = require('./cluster_render_client');
 const { MusicPlayer } = require('./musicplayer');
 const { lookup, resolved: dnsResolved } = require('./dns');
 
@@ -268,6 +269,14 @@ mgu.run({
         let video = null, music = null, playing = null;     // playing: the item
         let pb = null, progressT = null;                    // pb: the play session { id, mediaSourceId, playSessionId }
         const where = () => (video ? video.at() : 0);
+        // one connection to cluster-render for every video, kept (as waze-on-cluster): a target change drops
+        // the old layer and makes the new one on the same socket, in that order. A new connection per
+        // video raced the old one's close (HUD and whole cluster share a scene): it worked half the time
+        let crClient = null;
+        function clusterClient() {
+            if (!crClient) { crClient = new ClusterRender('mgu_media', process.env.CLUSTER_RENDER_SOCKET); crClient.on('error', () => {}); crClient.connect(); }
+            return crClient;
+        }
 
         async function stopAll() {
             clearInterval(progressT); progressT = null;
@@ -301,7 +310,7 @@ mgu.run({
             const fps = sharp && target !== 'cid' ? 15 : 30;
             const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps }, p));
             const bufS = +(settings.get('buffer') || 600);
-            video = new ClusterVideo({ url, headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            video = new ClusterVideo({ url, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
@@ -378,8 +387,11 @@ mgu.run({
                 if (!c) return;
                 const i = c.top + Math.floor((y - LIST_Y) / ROW_H);
                 if (y >= LIST_Y && i >= 0 && i < c.items.length && i < c.top + ROWS) { if (c.sel === i) choose(); else { c.sel = i; touch(); } }
-            } else if (page === 'player' && video && video.screen() && x >= SCR.x && x < SCR.x + SCR.w && y >= SCR.y && y < SCR.y + SCR.h) {
-                togglePause();
+            } else if (fullScreen()) {
+                // full screen: a tap shows the title, the time and the tabs; a tap while they show pauses / plays
+                if (overlay()) togglePause();
+                overlayUntil = Date.now() + 5000; touch();
+                setTimeout(touch, 5100);
             } else if (page === 'server' && srvMode === 'form') {
                 const f = FIELDS.find((d) => x >= d[2] && x < d[2] + d[3]);
                 if (y >= 96 && y < 140 && f) field = f[0];
@@ -478,16 +490,48 @@ mgu.run({
             if (c.items.length > ROWS) cv.text((c.sel + 1) + ' / ' + c.items.length, PIC.x - 40, 512, 16, t.dim, { align: 'right', literal: true });   // (left of the picture)
         }
 
-        /** the MGU display's video (op 19: the renderer reads the frames from the /dev/shm file itself) */
-        const SCR = { x: 40, y: 96, w: 740, h: 416 };
-        let vidDecl = '';
-        function videoGpu() { const g = ctx.display && ctx.display.gpu; return g && g.ready && g.native && g.info && g.info.video ? g : null; }
+        /**
+         * The MGU display's video, full screen (op 19: the renderer reads the frames from the /dev/shm file
+         * itself). On the car the app's page in the native dialect (mgu-render/1, embedded in the HMI's page)
+         * drew it black, as a prior project's pixmap; IterioDev's dialect (the app on its own layer over the screen,
+         * as IterioDev's YouTube player) draws op 19. So while a video plays there the display reconnects in
+         * that dialect, and back afterwards. A tap shows the title, the time and the tabs for 5 s; a tap then,
+         * or a press of the controller, pauses / plays.
+         */
+        const SCR = { x: 0, y: 0, w: W, h: H };
+        let vidDecl = '', dialect = '', overlayUntil = 0;
+        function useDialect(want) {
+            const d = ctx.display;
+            if (dialect === want || !d) return;
+            dialect = want;
+            log.info('display: ' + (want ? want + ' dialect (the MGU display\'s video)' : 'native dialect again'));
+            if (want) process.env.MGU_RENDERD_PROTO = want; else delete process.env.MGU_RENDERD_PROTO;
+            if (d.gpu) { try { d.gpu.show(false); d.gpu.close(); } catch (e) { /* closing */ } d.gpu = null; d.place = null; }
+            d.blocked = false;
+            try { d._lost(); } catch (e) { /* ignore */ }
+            try { d._mode(); } catch (e) { log.error('display restart: ' + e.message); }
+            pm = { g: null, gen: -1, img: null, bg: '' };
+            setPage(page);
+        }
+        function videoGpu() { const g = ctx.display && ctx.display.gpu; return g && g.ready && (g.native ? g.info && g.info.video : g.opts && g.opts.iterio) ? g : null; }
+        const fullScreen = () => page === 'player' && !!(video && video.screen());
+        const overlay = () => Date.now() < overlayUntil;
         function drawScreen(cv, t, scr) {
-            if (!videoGpu() || typeof cv.video !== 'function') { cv.text('This renderer shows no video (mgu-render needed)', SCR.x, SCR.y + 40, 20, t.warn || t.accent, lit); return; }
+            cv.fillRect(0, 0, W, H, '#000000');
+            if (!videoGpu() || typeof cv.video !== 'function') { cv.text('Connecting the video to the screen...', W / 2, H / 2, 22, '#ffffff', { align: 'center', literal: true }); return; }
             const key = scr.file + scr.w + 'x' + scr.h;
             if (vidDecl !== key) { setVideo(VID, scr.file, scr.w, scr.h); vidDecl = key; }
-            cv.fillRect(SCR.x, SCR.y, SCR.w, SCR.h, '#000000');
-            cv.video(VID, SCR.x, SCR.y, SCR.w, SCR.h, 0);
+            // fitted into the whole page, proportions kept
+            const s = Math.min(W / scr.w, H / scr.h), w = Math.round(scr.w * s), h = Math.round(scr.h * s);
+            cv.video(VID, Math.round((W - w) / 2), Math.round((H - h) / 2), w, h, 0);
+            if (!overlay()) return;
+            cv.fillRect(0, H - 120, W, 120, withAlpha('#000000', 0.7));
+            cv.text(playing.title + (playing.sub ? '  -  ' + playing.sub : ''), 40, H - 82, 24, '#ffffff', { font: 'bold', literal: true });
+            const pos = where(), dur = playing.duration / 1000;
+            cv.fillRect(40, H - 60, W - 80, 6, withAlpha('#ffffff', 0.25));
+            if (dur > 0) cv.fillRect(40, H - 60, Math.round((W - 80) * Math.min(1, pos / dur)), 6, t.accent);
+            cv.text(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : '') + (video.paused ? '   -   Paused' : '') + (video.buf ? '   -   buffer ' + fmtAhead(video.buf.ahead()) : ''), 40, H - 22, 20, '#ffffff', lit);
+            cv.text('Tap: ' + (video.paused ? 'play' : 'pause'), W - 40, H - 22, 20, '#ffffff', { align: 'right', literal: true });
         }
 
         const STATE_TEXT = (st) => (/^playing/.test(st) ? 'Playing' : /^(starting|loading|buffering)/.test(st) ? 'Loading...' : st === 'done' ? 'Finished'
@@ -495,11 +539,11 @@ mgu.run({
 
         function drawPlayer(cv, t) {
             if (!playing) { header(cv, t, 'Nothing plays'); cv.text(status || 'Choose a video or music in Browse.', 40, 130, 22, t.dim, lit); return; }
-            header(cv, t, playing.title + (playing.sub ? '  -  ' + playing.sub : ''));
             const scr = video && video.screen();
-            if (scr) drawScreen(cv, t, scr); else drawPic(cv, t, playing.img, PIC.x, 96);
-            // the text: right of the MGU display's picture, else left of the poster
-            const x = scr ? SCR.x + SCR.w + 40 : 40, wTxt = scr ? W - x - 40 : PIC.x - 80, chars = Math.floor(wTxt / 10);
+            if (scr) { drawScreen(cv, t, scr); return; }
+            header(cv, t, playing.title + (playing.sub ? '  -  ' + playing.sub : ''));
+            drawPic(cv, t, playing.img, PIC.x, 96);
+            const x = 40, wTxt = PIC.x - 80, chars = Math.floor(wTxt / 10);
             const say = (str, y, size, col) => cv.text(String(str).slice(0, chars), x, y, size, col, lit);
             if (video) {
                 const parked = gate.parked();
@@ -517,7 +561,7 @@ mgu.run({
                     say(hint.slice(0, hint.indexOf(' - ') + 1), 420, 18, t.warn || t.accent);
                     say(hint.slice(hint.indexOf(' - ') + 3), 446, 18, t.warn || t.accent);
                 }
-                if (debug()) video.lines().slice(0, 9).forEach((l, i) => cv.text(String(l).slice(0, scr ? 60 : 118), x, 300 + i * 22, 16, t.dim, lit));
+                if (debug()) video.lines().slice(0, 9).forEach((l, i) => cv.text(String(l).slice(0, 118), x, 300 + i * 22, 16, t.dim, lit));
                 else say((isPaused() ? 'Play' : 'Pause') + ': press the controller or the button below.', 480, 18, t.dim);
             } else if (music) {
                 const L = music.lines();
@@ -544,6 +588,8 @@ mgu.run({
             if (drawn === rev) return undefined;
             drawn = rev;
             const t = ctx.theme();
+            // the MGU display's video: IterioDev's dialect while it plays there (see useDialect)
+            useDialect(video && video.target === 'cid' ? 'iterio' : '');
             const cv = ctx.canvas(W, H).clear(t.bg);
             // (a page that fails to draw must not stop the tabs and the screen: it says so instead)
             try {
@@ -556,7 +602,7 @@ mgu.run({
                 drawErr = (e && e.message) || String(e);
                 cv.text('Drawing failed: ' + drawErr, 40, 480, 18, t.warn || t.accent, lit);
             }
-            G.frame(cv, t, TABS(), PAGES().indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
+            if (!fullScreen() || overlay()) G.frame(cv, t, TABS(), PAGES().indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
             return ui.image('MAIN_GFX', cv);
         }
         ctx.loop('MAIN', 4, render);
