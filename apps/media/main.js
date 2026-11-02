@@ -15,7 +15,7 @@
  * BMW's player, the park check) came from a prior project, where it ran on the car (0.2.40 - 0.2.44).
  */
 const mgu = require('./kit/mgu');
-const { withAlpha } = require('./kit/canvas');
+const { withAlpha, rgba } = require('./kit/canvas');
 const G = require('./kit/gauges');
 const fs = require('fs');
 const path = require('path');
@@ -69,7 +69,7 @@ mgu.run({
         const gate = parkGate || { parked: () => false, why: () => 'no vehicle signals' };
 
         /* ---------------- redraw only on change ---------------- */
-        let rev = 1, drawn = -1;
+        let rev = 1, drawn = -1, drawErr = '';
         const touch = () => { rev++; };
         setInterval(touch, 1000);              // time-based content (states, the player's time)
 
@@ -199,12 +199,26 @@ mgu.run({
             }
             return null;
         }
-        /** a picture fitted into the box at x, y (kept in proportion, centred) */
+        /**
+         * The picture goes to the renderer as a mgu-render/1 pixmap (as a prior project's remote screen, on the
+         * car): the canvas here records drawing ops for the GPU renderer and has no drawImage (0.2.2 drew
+         * with it: the drawing stopped there and the screen stayed as it was). Uploaded when the picture,
+         * the theme or the connection changes; without pixmaps (no GPU renderer) no picture.
+         */
+        const PIX_ID = 7;
+        let pm = { g: null, gen: -1, img: null, bg: '' };
+        function pixGpu() { const g = ctx.display && ctx.display.gpu; return g && g.ready && g.native && g.info && g.info.pixmap ? g : null; }
         function drawPic(cv, t, img, x, y) {
-            const p = picture(img);
-            if (!p) return;
-            const s = Math.min(PIC.w / p.w, PIC.h / p.h), w = Math.round(p.w * s), h = Math.round(p.h * s);
-            cv.drawImage(p.rgba, p.w, p.h, x + Math.round((PIC.w - w) / 2), y + Math.round((PIC.h - h) / 2), w, h);
+            const p = picture(img), g = pixGpu();
+            if (!p || !g || typeof cv.pixmap !== 'function') return;
+            if (g !== pm.g || g.resGen !== pm.gen) { g.pixmapDef(PIX_ID, PIC.w, PIC.h, 2, 1); pm = { g, gen: g.resGen, img: null, bg: '' }; }
+            const bg = String(t.bg);
+            if (pm.img !== img || pm.bg !== bg) {
+                g.pixmapPixels(PIX_ID, [{ x: 0, y: 0, w: PIC.w, h: PIC.h, data: png.fit(p, rgba(t.bg), PIC.w, PIC.h) }]);
+                pm.img = img; pm.bg = bg;
+                if (ctx.display) ctx.display.lastWords = null;       // (the same op as before: sent again so the new pixels show)
+            }
+            cv.pixmap(PIX_ID, x, y, PIC.w, PIC.h);
         }
 
         /* ================= Browse ================= */
@@ -433,7 +447,7 @@ mgu.run({
             }
             const it = c.items[c.sel];
             if (it) drawPic(cv, t, it.img, PIC.x, LIST_Y);
-            if (c.items.length > ROWS) cv.text((c.sel + 1) + ' / ' + c.items.length, W - 40, 506, 18, t.dim, { align: 'right', literal: true });
+            if (c.items.length > ROWS) cv.text((c.sel + 1) + ' / ' + c.items.length, PIC.x - 40, 512, 16, t.dim, { align: 'right', literal: true });   // (left of the picture)
         }
 
         function drawPlayer(cv, t) {
@@ -467,10 +481,17 @@ mgu.run({
             drawn = rev;
             const t = ctx.theme();
             const cv = ctx.canvas(W, H).clear(t.bg);
-            if (page === 'server') drawServer(cv, t);
-            else if (page === 'browse') drawBrowse(cv, t);
-            else if (page === 'player') drawPlayer(cv, t);
-            else drawDiag(cv, t);
+            // (a page that fails to draw must not stop the tabs and the screen: it says so instead)
+            try {
+                if (page === 'server') drawServer(cv, t);
+                else if (page === 'browse') drawBrowse(cv, t);
+                else if (page === 'player') drawPlayer(cv, t);
+                else drawDiag(cv, t);
+            } catch (e) {
+                if (!drawErr) log.error('draw ' + page + ': ' + (e && e.stack || e));
+                drawErr = (e && e.message) || String(e);
+                cv.text('Drawing failed: ' + drawErr, 40, 480, 18, t.warn || t.accent, lit);
+            }
             G.frame(cv, t, TABS, PAGES.indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: 'PLAYING' }]);
             return ui.image('MAIN_GFX', cv);
         }

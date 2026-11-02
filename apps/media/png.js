@@ -1,11 +1,11 @@
 'use strict';
 /**
  * png.js - a PNG to RGBA pixels, for node 8 on the head unit (no image library there): the posters
- * Jellyfin sends (format=Png) drawn with the kit canvas' drawImage.
+ * Jellyfin sends (format=Png), fitted into a box (fit) for a mgu-render/1 pixmap.
  * 8-bit grey, grey + alpha, RGB, RGBA and palette images, not interlaced (what Jellyfin's image
- * encoder writes); anything else throws. Alpha is dropped: drawImage draws opaque pixels.
+ * encoder writes); anything else throws. Alpha is dropped (the box is opaque).
  *
- *   const { w, h, rgba } = decode(buffer);
+ *   const { w, h, rgba } = decode(buffer);  const box = fit({ w, h, rgba }, [r, g, b], bw, bh);
  */
 const zlib = require('zlib');
 
@@ -56,4 +56,20 @@ function decode(buf) {
     return { w, h, rgba };
 }
 
-module.exports = { decode };
+/** a picture (w x h RGBA) scaled into a box bw x bh (proportions kept, centred, nearest pixel) on bg */
+function fit(p, bg, bw, bh) {
+    const out = Buffer.alloc(bw * bh * 4);
+    for (let i = 0; i < bw * bh * 4; i += 4) { out[i] = bg[0]; out[i + 1] = bg[1]; out[i + 2] = bg[2]; out[i + 3] = 255; }
+    const s = Math.min(bw / p.w, bh / p.h), w = Math.max(1, Math.round(p.w * s)), h = Math.max(1, Math.round(p.h * s));
+    const ox = (bw - w) >> 1, oy = (bh - h) >> 1;
+    for (let y = 0; y < h; y++) {
+        const sy = Math.min(p.h - 1, (y / s) | 0) * p.w, row = ((oy + y) * bw + ox) * 4;
+        for (let x = 0; x < w; x++) {
+            const si = (sy + Math.min(p.w - 1, (x / s) | 0)) * 4, di = row + x * 4;
+            out[di] = p.rgba[si]; out[di + 1] = p.rgba[si + 1]; out[di + 2] = p.rgba[si + 2];
+        }
+    }
+    return out;
+}
+
+module.exports = { decode, fit };
