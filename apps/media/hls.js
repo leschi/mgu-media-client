@@ -16,7 +16,8 @@ const url = require('url');
 function get(u, opts, hops) {
     opts = opts || {};
     return new Promise((resolve, reject) => {
-        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: { 'User-Agent': 'mgu-media' } });
+        // (ecdhCurve auto: node 8 offers only P-256 by default, some servers take P-384 only)
+        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: { 'User-Agent': 'mgu-media' }, ecdhCurve: 'auto' });
         const req = (o.protocol === 'http:' ? http : https).get(o, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && (hops || 0) < 3) {
                 res.resume();

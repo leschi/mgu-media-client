@@ -24,7 +24,7 @@ const kbd = require('./keyboard');
 const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
 const { MusicPlayer } = require('./musicplayer');
-const { lookup } = require('./dns');
+const { lookup, resolved: dnsResolved } = require('./dns');
 
 const W = 1600, H = 520;
 const TABS = ['Server', 'Browse', 'Player', 'Diag'];
@@ -84,22 +84,35 @@ mgu.run({
         const keyboard = new kbd.Keyboard('abc');
         let keyRects = [];
 
-        /** the address as typed: http:// added, Jellyfin's port 8096 to a plain http address without one */
-        function address() {
-            let u = fields.url.value.trim().replace(/\/+$/, '');
-            if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
-            if (/^http:/i.test(u) && !/^http:\/\/[^/]+:\d+/i.test(u)) u = u.replace(/^(http:\/\/[^/]+)/i, '$1:8096');
-            return u;
+        /**
+         * The addresses to try for what was typed: as it is when it names http(s) and a port; a name
+         * alone (jellyfin.example.com) https first, then Jellyfin's own http port 8096; http without a
+         * port 8096 first, then 80 (which may send on to https: ./jellyfin info follows it)
+         */
+        function addresses() {
+            const u = fields.url.value.trim().replace(/\/+$/, '');
+            const scheme = /^(https?):\/\//i.exec(u), rest = u.replace(/^https?:\/\//i, '');
+            const port = /^[^/]+:\d+/.test(rest);
+            if (scheme && (port || scheme[1].toLowerCase() === 'https')) return [u];
+            const host = rest.replace(/^([^/]+)/, '$1:8096');
+            if (scheme) return ['http://' + host, 'http://' + rest];
+            return port ? ['http://' + rest, 'https://' + rest] : ['https://' + rest, 'http://' + host, 'http://' + rest];
         }
 
         /** a Jellyfin server at the address? { name, version } */
         async function server() {
             if (fields.url.value.trim().replace(/^https?:\/\//i, '').length < 3) throw new Error('type the server address first');
-            jf.base = address();
-            status = 'Looking for Jellyfin at ' + jf.base + '...'; touch();
-            const i = await jf.info();
-            fields.url.value = jf.base; fields.url.caret = jf.base.length;
-            return i;
+            const tried = [];
+            for (const a of addresses()) {
+                jf.base = a;
+                status = 'Looking for Jellyfin at ' + a + '...'; touch();
+                try {
+                    const i = await jf.info();
+                    fields.url.value = jf.base; fields.url.caret = jf.base.length;
+                    return i;
+                } catch (e) { tried.push(a.replace(/^https?:\/\//, '') + ': ' + e.message); }
+            }
+            throw new Error(tried.join('; '));
         }
 
         function signedInAs(r, info) {
@@ -410,7 +423,9 @@ mgu.run({
 
         function drawDiag(cv, t) {
             header(cv, t, 'Diagnostics  -  ' + ctx.spec.title + ' ' + ctx.spec.version);
-            const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why()]
+            const host = (/^https?:\/\/([^/:]+)/.exec(conf.base || '') || [])[1], dn = host && dnsResolved[host];
+            const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why(),
+                'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-')]
                 .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-12));
             lines(cv, t, L, 110, 17, 22);
         }

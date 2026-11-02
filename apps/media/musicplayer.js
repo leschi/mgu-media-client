@@ -18,7 +18,7 @@ const POLL_MS = 2000;
 /** a URL streamed to a file (not held in memory: a FLAC is 30 MB); resolves with its size */
 function download(u, file, lookup, ms) {
     return new Promise((resolve, reject) => {
-        const o = Object.assign(url.parse(u), { lookup });
+        const o = Object.assign(url.parse(u), { lookup, ecdhCurve: 'auto' });      // (as ./jellyfin: node 8's P-256 only refused)
         const req = (o.protocol === 'http:' ? http : https).get(o, (res) => {
             if (res.statusCode !== 200) { res.resume(); return reject(new Error('http ' + res.statusCode)); }
             const out = fs.createWriteStream(file, { mode: 0o644 });

@@ -131,6 +131,21 @@ test('jellyfin: the video URL asks for Baseline H.264 in TS at 480x270; track fi
     assert.strictEqual(r.body.PositionTicks, 615000000); assert.strictEqual(r.body.PlaySessionId, 'ps1');
 });
 
+test('jellyfin: http sends on to https (301): the base moves with it', async () => {
+    const net = fakeNet({
+        'http://jf.example.at/System/Info/Public': { status: 301, body: '' },
+        'https://jf.example.at/System/Info/Public': { body: { ServerName: 'jf', Version: '12.4.0', Id: 'x' } },
+    });
+    const req = (m, u, o) => net.request(m, u, o).then((r) => Object.assign(r, { headers: /^http:/.test(u) ? { location: 'https://jf.example.at/System/Info/Public' } : {} }));
+    const jf = new Jellyfin({ deviceId: 'd', request: req, base: 'http://jf.example.at' });
+    assert.strictEqual((await jf.info()).version, '12.4.0');
+    assert.strictEqual(jf.base, 'https://jf.example.at');
+    const no = new Jellyfin({ deviceId: 'd', base: 'http://s', request: fakeNet({ '/System/Info/Public': { body: '<html>router</html>' } }).request });
+    let err = null;
+    try { await no.info(); } catch (e) { err = e; }
+    assert.ok(err && /no Jellyfin server/.test(err.message));
+});
+
 test('jellyfin: a 401 says to sign in again', async () => {
     const jf = new Jellyfin({ deviceId: 'c', base: 'http://s', token: 'x', userId: 'u', request: fakeNet({ '/UserViews': { status: 401 } }).request });
     let err = null;

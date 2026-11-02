@@ -35,13 +35,14 @@ function request(method, u, opts) {
     return new Promise((resolve, reject) => {
         const headers = Object.assign({}, opts.headers || {});
         if (opts.body != null) headers['Content-Length'] = Buffer.byteLength(opts.body);
-        const o = Object.assign(url.parse(u), { method, headers, lookup: opts.lookup });
+        // (ecdhCurve auto: node 8 offers only P-256 by default; servers that take P-384 only (a Let's Encrypt ECDSA setup) refused the handshake)
+        const o = Object.assign(url.parse(u), { method, headers, lookup: opts.lookup, ecdhCurve: 'auto' });
         const req = (o.protocol === 'http:' ? http : https).request(o, (res) => {
             const parts = [];
             res.on('data', (d) => parts.push(d));
             res.on('end', () => {
                 const body = Buffer.concat(parts);
-                resolve({ status: res.statusCode, body, json: () => JSON.parse(String(body) || 'null') });
+                resolve({ status: res.statusCode, headers: res.headers, body, json: () => JSON.parse(String(body) || 'null') });
             });
             res.on('error', reject);
         });
@@ -113,9 +114,18 @@ class Jellyfin {
     }
 
     /* ---- signing in ---- */
-    /** does a Jellyfin server answer at base: { name, version, id } */
+    /** does a Jellyfin server answer at base: { name, version, id }; a redirect (http -> https) moves base */
     async info() {
-        const j = await this._call('GET', '/System/Info/Public', null, { token: '', timeout: 6000 });
+        const r = await this.req('GET', this.base + '/System/Info/Public', { headers: this.headers(''), lookup: this.lookup, timeout: 6000 });
+        const to = r.status >= 300 && r.status < 400 && r.headers && r.headers.location;
+        if (to && !this.moved) {
+            this.moved = true;
+            this.base = url.resolve(this.base + '/System/Info/Public', to).replace(/\/System\/Info\/Public.*$/i, '');
+            try { return await this.info(); } finally { this.moved = false; }
+        }
+        if (r.status !== 200) throw new Error('http ' + r.status + ': no Jellyfin server here');
+        let j = null;
+        try { j = r.json(); } catch (e) { /* not JSON */ }
         if (!j || !j.Version) throw new Error('no Jellyfin server here');
         return { name: j.ServerName || this.base, version: j.Version, id: j.Id };
     }
