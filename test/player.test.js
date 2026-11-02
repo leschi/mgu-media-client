@@ -86,3 +86,31 @@ test('MusicPlayer: paused is not the end of a track', async () => {
     m.resume();
     assert.deepStrictEqual(buttons, ['PAUSE', 'PLAY']);
 });
+
+test('sound: on in a fresh file from the segment playing; the old one deleted; the picture clock counts from the file\'s start', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mgu-sound-'));
+    const v = new ClusterVideo({ url: 'http://x/v.m3u8', target: 'map', get, tmp: dir });
+    const a = { segs: Array.from({ length: 10 }, (x, i) => ({ url: 's' + i, t: i * 6, dur: 6 })) };
+    const calls = [];
+    const old = path.join(dir, 'mgu-media-sound-a.aac');
+    fs.writeFileSync(old, 'old');
+    v.audio = { state: 'playing', segs: 8, chunks: new Map(Array.from({ length: 8 }, (x, i) => [i, Buffer.from('<' + i + '>')])), nameIdx: 0, file: old, first: 0, base: 0,
+        media: { mp: 'mp', call: (p, m, arg) => { calls.push([m, arg]); return Promise.resolve({}); } } };
+    v._rotate(a, 20500, Date.now(), dir);                              // at 20.5 s: segment 3 (18-24 s)
+    const nu = dir + '/mgu-media-sound-b.aac';
+    assert.strictEqual(fs.readFileSync(nu, 'utf8'), '<3><4><5><6><7>');
+    assert.deepStrictEqual([v.audio.file, v.audio.first, v.audio.base], [nu, 3, 18]);
+    assert.deepStrictEqual(Array.from(v.audio.chunks.keys()), [3, 4, 5, 6, 7]);
+    await wait(50);
+    assert.strictEqual(calls[0][0], 'playFile'); assert.strictEqual(calls[0][1].path, nu);
+    assert.strictEqual(calls[1][0], 'setTime');
+    assert.ok(Math.abs(calls[1][1].newTimeElapsed - 2500) < 100, 'at 2.5 s into the new file: ' + calls[1][1].newTimeElapsed);
+    assert.strictEqual(v.audio.pending, 'reopen');
+    v.running = true; v.clock0 = Date.now() - 20000;
+    v._sync(3000);                                                     // (ignored while the reopen settles)
+    await wait(2600);
+    assert.ok(!fs.existsSync(old), 'the old file deleted');
+    v._sync(3000);                                                     // 3 s into the new file = 21 s in all
+    assert.ok(Math.abs(v.position() - 21) < 0.1, 'clock follows base + elapsed: ' + v.position());
+    fs.unlinkSync(nu); fs.rmdirSync(dir);
+});

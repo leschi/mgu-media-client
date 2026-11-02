@@ -24,8 +24,12 @@ const { H264Decoder, i420ToAtlas } = require('./h264dec');
 
 const TICK_MS = 15;
 const SLICE_MS = 25;                    // decode at most this long per tick (node stays free for the UI)
-const AUDIO_FILE = '/tmp/mgu-media-sound.aac';
+const AUDIO_NAMES = ['mgu-media-sound-a.aac', 'mgu-media-sound-b.aac'];   // the sound file, and the next one (see _rotate)
 const AUDIO_LEAD = 2;                   // audio segments in the file before the player starts
+// how far the sound file runs ahead of the picture: BMW's player keeps the length it saw when it opened
+// the file, so near that end it is opened again (a short gap). 12 s ahead (0.2.3) made that every ~9 s,
+// a hitch each time; with the disk buffer the sound runs up to 10 minutes ahead: one reopen per stretch
+const LEAD_NO_BUFFER = 12, LEAD_MAX = 600, LEAD_START = 30;
 const SKIP_NAL = { 6: 1, 9: 1, 12: 1 };   // SEI, access unit delimiter, filler: h264bsd refuses them
 // cluster-render writes every layer within one upload budget, 5500 KB/s at most (more and the KOMBI
 // dropped the picture): a 640x360 atlas at 24 fps is 8.3 MB/s, so frames went packed or waited - it
@@ -190,7 +194,8 @@ class ClusterVideo {
         this.audio.media = null;
         const closing = m ? m.close().catch(() => {}) : Promise.resolve();
         if (this.audio.state !== 'off') this.audio.state = 'stopped';
-        setTimeout(() => { try { fs.unlinkSync(AUDIO_FILE); } catch (e) { /* gone */ } }, 3000);
+        const dir = this.o.tmp || '/tmp';
+        setTimeout(() => AUDIO_NAMES.forEach((n) => { try { fs.unlinkSync(dir + '/' + n); } catch (e) { /* gone */ } }), 3000);
         if (!/^error/.test(this.state)) this.state = 'stopped';
         return closing;
     }
@@ -228,6 +233,7 @@ class ClusterVideo {
      */
     _sync(elapsedMs) {
         if (!(elapsedMs > 1000) || /reopen/.test(this.audio.pending || '') || this.paused) return;
+        elapsedMs += (this.audio.base || 0) * 1000;                   // (the file starts there: _rotate)
         if (!this.clock0) { this.clock0 = Date.now() - elapsedMs; return; }
         const diff = (Date.now() - this.clock0) - elapsedMs;          // > 0: the picture is ahead of the sound
         this.syncInfo = { diff, n: (this.syncInfo ? this.syncInfo.n : 0) + (Math.abs(diff) > 250 ? 1 : 0) };
@@ -318,69 +324,99 @@ class ClusterVideo {
 
     /**
      * The sound: the audio rendition's segments (ID3 cut off), or the AAC in the video's own TS segments
-     * (a server transcode), appended to one .aac file; the player starts once AUDIO_LEAD segments are in,
-     * the rest follows ahead of the picture. Its state and time show on Diag.
+     * (a server transcode), appended to a .aac file in /tmp; the player starts once AUDIO_LEAD segments
+     * (with the disk buffer: up to 30 s) are in, the rest follows ahead of the picture (lead). Near the
+     * length the player saw, the sound goes on in a fresh file that starts at the segment playing
+     * (_rotate): the old one is deleted, so the file in RAM stays a few minutes long, however long the film.
      */
     async _audioStart() {
         const sep = this.src.audio, sig = this.o.sig;
         const a = sep || this.src.video;
         const sound = sep ? (i) => this.src.segment(a.segs[i].url).then(stripId3) : (i) => (this.buf ? this.buf.get(i) : this.src.segment(a.segs[i].url)).then((b) => demuxTsAll(b).audio);
         if (!sig || !sig.hasNative()) { this.audio.state = 'none (no SOME/IP here)'; return; }
+        const dir = this.o.tmp || '/tmp';
+        const lead = this.buf ? Math.max(LEAD_NO_BUFFER, Math.min(LEAD_MAX, (this.o.bufferS || 600) - 10)) : LEAD_NO_BUFFER;
+        const au = this.audio;
         try {
-            this.audio.state = 'fetching';
-            fs.writeFileSync(AUDIO_FILE, Buffer.alloc(0), { mode: 0o644 }); fs.chmodSync(AUDIO_FILE, 0o644);
+            au.state = 'fetching';
+            au.chunks = new Map();              // segment -> its sound (from the file's first segment on)
+            au.nameIdx = 0; au.file = dir + '/' + AUDIO_NAMES[0]; au.first = 0; au.base = 0;
+            fs.writeFileSync(au.file, Buffer.alloc(0), { mode: 0o644 }); fs.chmodSync(au.file, 0o644);
             let i = 0;
             const more = async () => {
-                const b = await sound(i);
-                if (!b && i === 0) throw new Error('no sound in the stream');
-                if (b) fs.appendFileSync(AUDIO_FILE, b);
-                this.audio.segs = ++i;
+                const k = i;
+                const b = await sound(k);
+                if (!b && k === 0) throw new Error('no sound in the stream');
+                au.chunks.set(k, b || Buffer.alloc(0));
+                if (b) fs.appendFileSync(au.file, b);
+                au.segs = i = k + 1;
             };
-            while (i < AUDIO_LEAD && this.running) {
+            const soundS = () => (i < a.segs.length ? a.segs[i].t : a.segs.length ? a.segs[a.segs.length - 1].t + a.segs[a.segs.length - 1].dur : 0);
+            const t0 = Date.now();
+            while (this.running && (i < AUDIO_LEAD || (this.buf && soundS() < LEAD_START && Date.now() - t0 < 8000))) {
                 if (i < a.segs.length) await more();
                 else if (a.ended) break;
                 else { await this._refresh(); await new Promise((r2) => setTimeout(r2, 1000)); }
             }
             if (!this.running) return;
-            this.audio.state = 'starting';
+            au.state = 'starting';
             const media = await require('./oapmedia').openMedia(sig, (l) => this._event(l));
             if (!this.running) { media.close(); return; }
-            this.audio.media = media;
-            const r = await media.play(AUDIO_FILE, 8);
-            this.audio.state = r.playing ? 'playing' : 'not playing: ' + r.answer + ', ' + r.state;
-            this._event('sound: ' + this.audio.state);
+            au.media = media;
+            const r = await media.play(au.file, 8);
+            au.state = r.playing ? 'playing' : 'not playing: ' + r.answer + ', ' + r.state;
+            this._event('sound: ' + au.state);
             if (r.playing && this.queue.length && !this.clock0) this.clock0 = Date.now();
-            // the rest: a segment ahead of the sound, while it plays; the player's time on Diag
+            // the player's time (the picture follows it), and near the length it saw: on in a fresh file
             const poll = setInterval(() => {
-                if (!this.running || !this.audio.media) return clearInterval(poll);
+                if (!this.running || !au.media) return clearInterval(poll);
                 media.get('currentItemTime').then((x) => {
-                    this.audio.line = 'time ' + x + ', ' + this.audio.segs + '/' + a.segs.length + ' segments in the file' + (this.audio.reopened ? ', reopened ' + this.audio.reopened + 'x' : '');
-                    // the player may keep the length it saw when it opened the file: near that end, while the
-                    // file holds more, open it again at the time it was at (the assembly test's way E)
+                    const at = Date.now();
+                    au.line = 'time ' + x + ', ' + au.segs + '/' + a.segs.length + ' segments, ' + Math.round(soundS() - this.position()) + ' s ahead' + (au.reopened ? ', reopened ' + au.reopened + 'x' : '');
                     const e = /"elapsed":(\d+)/.exec(x), tot = /"total":(\d+)/.exec(x);
                     if (e) this._sync(+e[1]);
-                    const fileS = this.audio.segs < a.segs.length ? a.segs[this.audio.segs].t : Infinity;
-                    if (e && tot && !this.paused && +tot[1] - +e[1] < 3500 && fileS * 1000 > +tot[1] + 3000) {
-                        this.audio.reopened = (this.audio.reopened || 0) + 1;
-                        this.audio.pending = 'reopen';         // (its time jumps meanwhile: no sync from it)
-                        media.call(media.mp, 'playFile', { path: AUDIO_FILE, languageCode: 0 })
-                            .then(() => media.call(media.mp, 'setTime', { newTimeElapsed: +e[1] })).catch(() => {})
-                            .then(() => setTimeout(() => { this.audio.pending = ''; }, 2500));
-                    }
+                    const fileEndMs = (soundS() - au.base) * 1000;
+                    if (e && tot && !this.paused && !au.pending && +tot[1] - +e[1] < 3500 && fileEndMs > +tot[1] + 3000) this._rotate(a, +e[1], at, dir);
                 });
-                media.get('playerState').then((x) => { this.audio.state = /PLAY"/.test(x) ? 'playing' : this.paused ? 'paused' : 'stopped by the player: ' + x; });
+                media.get('playerState').then((x) => { au.state = /PLAY"/.test(x) ? 'playing' : this.paused ? 'paused' : 'stopped by the player: ' + x; });
                 return undefined;
             }, 2000);
             while (this.running && (i < a.segs.length || !a.ended)) {
                 if (i >= a.segs.length) { await this._refresh(); await new Promise((r2) => setTimeout(r2, 1000)); continue; }
-                const ahead = a.segs[i].t - this.position();
-                if (ahead > 12) { await new Promise((r2) => setTimeout(r2, 1000)); continue; }
+                if (a.segs[i].t - this.position() > lead) { await new Promise((r2) => setTimeout(r2, 1000)); continue; }
                 await more();
             }
         } catch (e) {
-            this.audio.state = 'error: ' + (e && e.message || e);
-            this._event('sound: ' + this.audio.state);
+            au.state = 'error: ' + (e && e.message || e);
+            this._event('sound: ' + au.state);
         }
+    }
+
+    /**
+     * The sound on in a fresh file: from the segment playing to all that is in, the player opened on it
+     * at the time it was at (elapsedMs, read at polledAt), the old file deleted. Written in one go, so the
+     * segments still coming are appended to the new one.
+     */
+    _rotate(a, elapsedMs, polledAt, dir) {
+        const au = this.audio, media = au.media;
+        const pos = au.base + elapsedMs / 1000;
+        let k = au.first;
+        while (k + 1 < au.segs && a.segs[k + 1].t <= pos) k++;
+        const parts = [];
+        for (let j = k; j < au.segs; j++) if (au.chunks.has(j)) parts.push(au.chunks.get(j));
+        const old = au.file;
+        au.nameIdx = 1 - au.nameIdx;
+        const file = dir + '/' + AUDIO_NAMES[au.nameIdx];
+        try { fs.writeFileSync(file, Buffer.concat(parts), { mode: 0o644 }); fs.chmodSync(file, 0o644); } catch (e) { this._event('sound file: ' + e.message); return; }
+        for (const j of Array.from(au.chunks.keys())) if (j < k) au.chunks.delete(j);
+        au.file = file; au.first = k; au.base = a.segs[k].t;
+        au.reopened = (au.reopened || 0) + 1;
+        au.pending = 'reopen';                 // (its time jumps meanwhile: no sync from it)
+        media.call(media.mp, 'playFile', { path: file, languageCode: 0 })
+            // (where it is by now: the time read, plus what passed since)
+            .then(() => media.call(media.mp, 'setTime', { newTimeElapsed: Math.max(0, Math.round((pos - au.base) * 1000 + (Date.now() - polledAt))) }))
+            .catch((e) => this._event('reopen: ' + (e && e.message)))
+            .then(() => setTimeout(() => { au.pending = ''; try { fs.unlinkSync(old); } catch (e) { /* gone */ } }, 2500));
     }
 }
 
