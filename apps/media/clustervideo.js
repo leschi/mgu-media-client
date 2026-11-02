@@ -18,6 +18,8 @@ const { ClusterRender } = require('./cluster_render_client');
 const { fitRect, parseTargets, TARGETS } = require('./targets');
 const { HlsSource, stripId3 } = require('./hls');
 const { demuxTsAll } = require('./tsdemux');
+const { SegmentBuffer } = require('./buffer');
+const { ShmVideo } = require('./shmvideo');
 const { H264Decoder, i420ToAtlas } = require('./h264dec');
 
 const TICK_MS = 15;
@@ -31,12 +33,14 @@ const SKIP_NAL = { 6: 1, 9: 1, 12: 1 };   // SEI, access unit delimiter, filler:
 // 'sharp' the largest, as before.
 const BUDGET_BPS = 5500 * 1000 * 0.85;
 const STATUS_FILE = '/run/cluster-render/status.txt';
+const SHM_FILE = '/dev/shm/mgu-video-media';       // the MGU display's video (./shmvideo)
 
 class ClusterVideo {
     constructor(o) {
         this.o = o;
         this.log = o.log || { info() {}, warn() {} };
-        this.target = TARGETS[o.target] ? o.target : 'map';
+        // cid: the MGU's own display (./shmvideo), else a cluster-render target
+        this.target = o.target === 'cid' || TARGETS[o.target] ? o.target : 'map';
         this.state = 'starting';
         this.events = [];
         this.stats = { decoded: 0, sent: 0, decMs: 0, segs: 0, dropped: 0 };
@@ -52,10 +56,29 @@ class ClusterVideo {
         this.svc = { t: 0, lines: [] };
         this.profile = null;             // the stream's H.264 profile_idc (66 Baseline, 77 Main, 100 High)
         this.refreshT = 0;
+        this.paused = false; this.pauseAt = 0;
     }
 
     /** where the video is, in seconds (for a server's "continue watching") */
-    position() { return this.clock0 ? (Date.now() - this.clock0) / 1000 : 0; }
+    position() { return this.paused ? this.pauseAt : this.clock0 ? (Date.now() - this.clock0) / 1000 : 0; }
+
+    /** pause: the picture holds its frame, the clock stops, BMW's player pauses the sound */
+    pause() {
+        if (this.paused || !this.running) return;
+        this.pauseAt = this.position(); this.paused = true;
+        if (this.audio.media) this.audio.media.button('PAUSE').catch(() => {});
+        this._event('paused at ' + this.pauseAt.toFixed(1) + ' s');
+    }
+    resume() {
+        if (!this.paused) return;
+        this.paused = false;
+        if (this.clock0) this.clock0 = Date.now() - this.pauseAt * 1000;
+        if (this.audio.media) this.audio.media.button('PLAY').catch(() => {});
+        this._event('playing on');
+    }
+
+    /** the MGU display's picture as the app's page draws it: { file, w, h } while shown, else null */
+    screen() { return this.target === 'cid' && this.cr && this.cr.shown && this.showing ? { file: this.cr.file, w: this.cr.w, h: this.cr.h } : null; }
 
     /** where it is in the whole video (a start position: the segment it started at, ./hls startAt) */
     at() { return ((this.src && this.src.startT) || 0) + this.position(); }
@@ -83,12 +106,18 @@ class ClusterVideo {
 
     _event(l) { this.events.push(new Date().toTimeString().slice(0, 8) + ' ' + l); if (this.events.length > 6) this.events.shift(); this.log.info('cluster video: ' + l); }
 
+    /** what the user must do for the picture to show ('' when nothing): the Player page shows it without Debug on */
+    hint() {
+        // (as waze-on-cluster: the middle is ours only in the cluster's Map view, or with it off)
+        return this.stockSince && Date.now() - this.stockSince > 8000 ? 'NOT SHOWN: BMW content holds the cluster middle - set Instrument cluster >' +
+            ' Central display area to Map view (or Off), as Waze needs; or choose Whole cluster / HUD' : '';
+    }
+
     /** Diag lines */
     lines() {
         const s = this.stats, v = this.src && this.src.video;
-        const t = this.clock0 ? ((Date.now() - this.clock0) / 1000).toFixed(1) + ' s' : '-';
-        const held = this.stockSince && Date.now() - this.stockSince > 8000 ? ['NOT SHOWN: BMW content on the cluster holds this area (it takes it back each time) -' +
-            ' switch the cluster to another view, or the next step (the whole cluster)'] : [];
+        const t = this.clock0 ? this.position().toFixed(1) + ' s' : '-';
+        const held = this.hint() ? [this.hint()] : [];
         return held.concat(['video ' + this.target + ': ' + this.state + ', parked check: ' + (this.o.gate ? this.o.gate.why() : '-'),
             'stream: ' + (v ? v.width + 'x' + v.height + ' ' + v.codecs + ', ' + v.segs.length + ' segments' : '-') + ', at ' + t + ', segment ' + this.segIdx,
             'decoded ' + s.decoded + ' (' + (s.decoded ? (s.decMs / s.decoded).toFixed(1) : '-') + ' ms each), sent ' + s.sent + ', late ' + s.dropped + (this.dec ? ', decoder errors ' + this.dec.errors : '') +
@@ -97,7 +126,7 @@ class ClusterVideo {
             'sound: ' + this.audio.state + (this.audio.line ? ' - ' + this.audio.line : '') +
                 (this.syncInfo ? '; sync: picture ' + (this.syncInfo.diff >= 0 ? '+' : '') + (this.syncInfo.diff / 1000).toFixed(2) + ' s to the sound, set ' + this.syncInfo.n + 'x' : ''),
             'quality ' + this.quality + (v && v.fps ? ', ' + Math.round(v.width * v.height * 1.5 * v.fps / 1000) + ' KB/s of atlases' : '') + (this.budget ? ', ' + this.budget : '')]
-            .concat(this._svcStatus(), this.events));
+            .concat(this.buf ? [this.buf.lines()] : [], this._svcStatus(), this.events));
     }
 
     async start() {
@@ -110,10 +139,21 @@ class ClusterVideo {
             if (!this.src.video) await this.src.open();
             if (!this.running) return;
             const v = this.src.video;
+            // the segments ahead on the unit's flash (./buffer): picture and sound read them from there
+            if (this.o.bufferDir) {
+                const segs = () => this.src.video.segs;
+                this.buf = new SegmentBuffer({ dir: this.o.bufferDir, aheadS: this.o.bufferS || 600, df: this.o.df, log: this.log,
+                    fetch: (i) => this.src.segment(segs()[i].url), count: () => segs().length, time: (i) => (segs()[i] ? segs()[i].t : 0),
+                    dur: (i) => (segs()[i] ? segs()[i].dur : 6), ended: () => !!this.src.video.ended, more: () => this._refresh() });
+                this.buf.start();
+            }
             this._event('playlist: ' + (v.width + 'x' + v.height) + ' ' + v.codecs + ', ' + v.segs.length + ' segments' + (v.ended ? '' : ' so far') +
                 (this.src.audio ? ', sound ' + this.src.audio.segs.length : ', sound in the segments') + (this.src.warn ? '; ' + this.src.warn : ''));
-            this.cr = this.o.client || new ClusterRender(this.o.app || 'mgu_vnc', this.o.socketPath || process.env.CLUSTER_RENDER_SOCKET);
-            this.cr.on('ready', () => { this.layer = 0; this._event('cluster-render connected'); });
+            this.cr = this.o.client || (this.target === 'cid' ? new ShmVideo(this.o.shmFile || SHM_FILE)
+                : new ClusterRender(this.o.app || 'mgu_vnc', this.o.socketPath || process.env.CLUSTER_RENDER_SOCKET));
+            // (a reconnect: the client sends its layers again itself - ours stays ours; a new one would
+            // leave the old one stalled, and cluster-render takes 2 video layers in all)
+            this.cr.on('ready', () => this._event('cluster-render connected'));
             this.cr.on('layer', (ref, state, reason) => {
                 if (ref !== this.layer) return;
                 // BMW's own content in the slot (the map area: the cluster's own view) - since when, for the hint
@@ -145,6 +185,7 @@ class ClusterVideo {
         if (this.cr && !this.o.client) { try { this.cr.close(); } catch (e) { /* closing */ } }
         this.cr = null;
         if (this.dec) { this.dec.release(); this.dec = null; }
+        if (this.buf) { this.buf.stop(); this.buf = null; }
         const m = this.audio.media;
         this.audio.media = null;
         const closing = m ? m.close().catch(() => {}) : Promise.resolve();
@@ -154,13 +195,15 @@ class ClusterVideo {
         return closing;
     }
 
-    _targetSize() { return (this.cr && parseTargets(this.cr.targets)[this.target]) || TARGETS[this.target]; }
+    _targetSize() { return (this.cr && parseTargets(this.cr.targets)[this.target]) || TARGETS[this.target] || [1600, 520]; }
 
     _show(w, h) {
         if (this.layer || !this.cr || !this.cr.ready) return;
         const sz = this._targetSize();
         this.rect = fitRect(w, h, sz[0], sz[1]);
-        this.layer = this.cr.video(Object.assign({ target: this.target, klass: 'content', contend: 1, vw: w, vh: h, fps: 30, stall_ms: 3000 }, this.rect));
+        // stall_ms: a layer without a frame for that long un-wants the target, which gives the middle back
+        // to BMW's map and starts the take-over again (flicker): 30 s rides out a slow segment (waze: 60 s)
+        this.layer = this.cr.video(Object.assign({ target: this.target, klass: 'content', contend: 1, vw: w, vh: h, fps: 30, stall_ms: 30000 }, this.rect));
         this.atlas = Buffer.alloc(w * h * 3 / 2);
         this.showing = !!this.layer;
         this._event(this.layer ? 'layer ' + w + 'x' + h + ' on ' + this.target : 'layer refused by the client');
@@ -171,13 +214,20 @@ class ClusterVideo {
         this.layer = 0; this.showing = false;
     }
 
+    /** not parked / parked again: the same layer hidden and shown (as waze), not dropped and made anew */
+    _visible(on) {
+        if (!this.layer || !this.cr || this.showing === on) return;
+        try { this.cr.set(this.layer, { visible: on ? 1 : 0 }); } catch (e) { /* gone */ }
+        this.showing = on;
+    }
+
     /**
      * The picture follows the sound: the player's own time (elapsed, ms) sets the video clock. Started
      * on the app's guess of when the sound began, the sound ran a few seconds ahead (car v0.2.41): the
      * player plays before its state says so, and the first video segment was still loading.
      */
     _sync(elapsedMs) {
-        if (!(elapsedMs > 1000) || /reopen/.test(this.audio.pending || '')) return;
+        if (!(elapsedMs > 1000) || /reopen/.test(this.audio.pending || '') || this.paused) return;
         if (!this.clock0) { this.clock0 = Date.now() - elapsedMs; return; }
         const diff = (Date.now() - this.clock0) - elapsedMs;          // > 0: the picture is ahead of the sound
         this.syncInfo = { diff, n: (this.syncInfo ? this.syncInfo.n : 0) + (Math.abs(diff) > 250 ? 1 : 0) };
@@ -194,19 +244,26 @@ class ClusterVideo {
     _fetch(i) {
         const segs = this.src.video.segs;
         if (i >= segs.length) return Promise.resolve(null);
-        return this.src.segment(segs[i].url).then((b) => { this.stats.segs++; return demuxTsAll(b).video; });
+        return (this.buf ? this.buf.get(i) : this.src.segment(segs[i].url)).then((b) => { this.stats.segs++; return demuxTsAll(b).video; });
     }
 
     _tick() {
         if (!this.running || !this.src) return;
+        // (the buffer follows the clock - the sound's - also while the picture is off)
+        if (this.buf && this.clock0) this.buf.setPos(this._segAt(this.position()));
         const parked = !this.o.gate || this.o.gate.parked();
         if (!parked) {
-            if (this.showing || this.state !== 'paused: not parked (the sound goes on)') { this._hide(); this.queue = []; this.next = null; this.state = 'paused: not parked (the sound goes on)'; this._event('picture off: ' + (this.o.gate ? this.o.gate.why() : '')); }
+            if (this.showing || this.state !== 'paused: not parked (the sound goes on)') { this._visible(false); this.queue = []; this.next = null; this.state = 'paused: not parked (the sound goes on)'; this._event('picture off: ' + (this.o.gate ? this.o.gate.why() : '')); }
             return;
         }
         // the clock starts with the sound (up to 15 s for it), else with the first segment
         if (!this.clock0 && this.queue.length && (!/^(fetching|starting)/.test(this.audio.state) || Date.now() > this.audioWait)) this.clock0 = Date.now();
-        const now = this.clock0 ? (Date.now() - this.clock0) / 1000 : 0;
+        const now = this.position();
+        // paused: the layer keeps its last frame (sent again now and then: cluster-render's stall_ms)
+        if (this.paused) {
+            if (this.layer && this.lastPic && !this.cr.wantsI420 && Date.now() - (this.lastSent || 0) > 1000) { this.lastSent = Date.now(); this.cr.frame(this.layer, this.lastPic, this.stats.sent + 1); }
+            return;
+        }
         // parked again after a pause: the picture starts where the sound is (from that segment's start)
         if (!this.queue.length && !this.fetching) {
             const want = this.clock0 ? Math.max(this.segIdx, this._segAt(now)) : this.segIdx;
@@ -248,10 +305,13 @@ class ClusterVideo {
             // the picture as the playlist names it (h264bsd hands out whole macroblocks: 368 rows for 360)
             const v = this.src.video, w = v.width && v.width <= pic.w ? v.width : pic.w, h = v.height && v.height <= pic.h ? v.height : pic.h;
             const W = w & ~3, H = h & ~1;
-            if (!this.layer) this._show(W, H);
+            if (!this.layer) this._show(W, H); else this._visible(true);
             if (this.layer) {
                 const i420 = W === pic.w && H === pic.h ? pic.i420 : crop(pic, W, H);
-                if (this.cr.frame(this.layer, i420ToAtlas(i420, W, H, this.atlas), this.stats.sent + 1)) this.stats.sent++;
+                // (the MGU display's renderer takes I420 as it is and keeps it while paused; cluster-render its atlas)
+                const out = this.cr.wantsI420 ? i420 : (this.lastPic = i420ToAtlas(i420, W, H, this.atlas));
+                this.lastSent = Date.now();
+                if (this.cr.frame(this.layer, out, this.stats.sent + 1)) this.stats.sent++;
             }
         }
     }
@@ -264,7 +324,7 @@ class ClusterVideo {
     async _audioStart() {
         const sep = this.src.audio, sig = this.o.sig;
         const a = sep || this.src.video;
-        const sound = sep ? (i) => this.src.segment(a.segs[i].url).then(stripId3) : (i) => this.src.segment(a.segs[i].url).then((b) => demuxTsAll(b).audio);
+        const sound = sep ? (i) => this.src.segment(a.segs[i].url).then(stripId3) : (i) => (this.buf ? this.buf.get(i) : this.src.segment(a.segs[i].url)).then((b) => demuxTsAll(b).audio);
         if (!sig || !sig.hasNative()) { this.audio.state = 'none (no SOME/IP here)'; return; }
         try {
             this.audio.state = 'fetching';
@@ -300,7 +360,7 @@ class ClusterVideo {
                     const e = /"elapsed":(\d+)/.exec(x), tot = /"total":(\d+)/.exec(x);
                     if (e) this._sync(+e[1]);
                     const fileS = this.audio.segs < a.segs.length ? a.segs[this.audio.segs].t : Infinity;
-                    if (e && tot && +tot[1] - +e[1] < 3500 && fileS * 1000 > +tot[1] + 3000) {
+                    if (e && tot && !this.paused && +tot[1] - +e[1] < 3500 && fileS * 1000 > +tot[1] + 3000) {
                         this.audio.reopened = (this.audio.reopened || 0) + 1;
                         this.audio.pending = 'reopen';         // (its time jumps meanwhile: no sync from it)
                         media.call(media.mp, 'playFile', { path: AUDIO_FILE, languageCode: 0 })
@@ -308,12 +368,12 @@ class ClusterVideo {
                             .then(() => setTimeout(() => { this.audio.pending = ''; }, 2500));
                     }
                 });
-                media.get('playerState').then((x) => { this.audio.state = /PLAY"/.test(x) ? 'playing' : 'stopped by the player: ' + x; });
+                media.get('playerState').then((x) => { this.audio.state = /PLAY"/.test(x) ? 'playing' : this.paused ? 'paused' : 'stopped by the player: ' + x; });
                 return undefined;
             }, 2000);
             while (this.running && (i < a.segs.length || !a.ended)) {
                 if (i >= a.segs.length) { await this._refresh(); await new Promise((r2) => setTimeout(r2, 1000)); continue; }
-                const ahead = a.segs[i].t - (this.clock0 ? (Date.now() - this.clock0) / 1000 : 0);
+                const ahead = a.segs[i].t - this.position();
                 if (ahead > 12) { await new Promise((r2) => setTimeout(r2, 1000)); continue; }
                 await more();
             }

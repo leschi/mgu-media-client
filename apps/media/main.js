@@ -16,6 +16,7 @@
  */
 const mgu = require('./kit/mgu');
 const { withAlpha, rgba } = require('./kit/canvas');
+const { setVideo } = require('./kit/record');
 const G = require('./kit/gauges');
 const fs = require('fs');
 const path = require('path');
@@ -28,15 +29,20 @@ const { MusicPlayer } = require('./musicplayer');
 const { lookup, resolved: dnsResolved } = require('./dns');
 
 const W = 1600, H = 520;
-const TABS = ['Server', 'Browse', 'Player', 'Diag'];
-const PAGES = ['server', 'browse', 'player', 'diag'];
+// (Diag only with Settings -> Debug on)
+const TABS_ALL = ['Server', 'Browse', 'Player', 'Diag'];
+const PAGES_ALL = ['server', 'browse', 'player', 'diag'];
 const ROWS = 8, ROW_H = 52, LIST_Y = 92;
 const PIC = { x: W - 330, w: 290, h: 410 };       // the picture of the chosen item, right of the list
-const TARGET_NAME = { map: 'Cluster middle', panel: 'Whole cluster', hud: 'Head-up display' };
+const TARGET_NAME = { map: 'Cluster middle', panel: 'Whole cluster', hud: 'Head-up display', cid: 'MGU display' };
+const VID = 5;                                   // the MGU display's video (op 19, ./shmvideo)
 
 mgu.run({
     async start(ctx) {
         const { ui, settings } = ctx;
+        const debug = () => settings.get('debug') === true;
+        const PAGES = () => (debug() ? PAGES_ALL : PAGES_ALL.slice(0, 3));
+        const TABS = () => TABS_ALL.slice(0, PAGES().length);
         const dataDir = ctx.dataDir;
 
         /* ---------------- log ring (Diag) ---------------- */
@@ -57,6 +63,10 @@ mgu.run({
         const save = () => { try { fs.writeFileSync(CONF, JSON.stringify(conf), { mode: 0o600 }); } catch (e) { log.warn('save: ' + e.message); } };
         save();
         const jf = new Jellyfin({ deviceId: conf.deviceId, lookup, base: conf.base, token: conf.token, userId: conf.userId });
+
+        // the video buffer on the flash (./buffer), emptied: what a killed run left
+        const BUF_DIR = path.join(dataDir, 'buffer');
+        require('./buffer').clearDir(BUF_DIR);
 
         // what an earlier run left in /tmp (RAM on the unit): sound and track files of a player that was killed
         try { fs.readdirSync('/tmp').filter((f) => /^mgu-media-/.test(f)).forEach((f) => { try { fs.unlinkSync('/tmp/' + f); } catch (e) { /* not ours */ } }); } catch (e) { /* no /tmp here */ }
@@ -285,12 +295,17 @@ mgu.run({
             if (playing !== it || video || music) return;          // (something else was chosen meanwhile)
             const p = { id: it.id, mediaSourceId: info.mediaSourceId, playSessionId: info.playSessionId || crypto.randomBytes(8).toString('hex') };
             pb = p;
-            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 2000000 : 1200000 }, p));
-            video = new ClusterVideo({ url, headers: jf.streamHeaders(), startAt: from, target: settings.get('target') || 'map', gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            // Sharp on the cluster / HUD: 15 fps, so 640x360 fits cluster-render's upload limit (5.5 MB/s);
+            // the MGU display has none. Bitrates for Baseline (no B-frames, no CABAC: it needs more)
+            const target = settings.get('target') || 'map';
+            const fps = sharp && target !== 'cid' ? 15 : 30;
+            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps }, p));
+            const bufS = +(settings.get('buffer') || 600);
+            video = new ClusterVideo({ url, headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
-            progressT = setInterval(() => { if (video && pb === p) jf.report('progress', Object.assign({ timeMs: video.at() * 1000 }, p)); }, 10000);
+            progressT = setInterval(() => { if (video && pb === p) jf.report('progress', Object.assign({ timeMs: video.at() * 1000, paused: video.paused }, p)); }, 10000);
             touch();
         }
 
@@ -305,6 +320,15 @@ mgu.run({
             setPage('player');
         }
 
+        const isPaused = () => !!((video && video.paused) || (music && music.paused));
+        function togglePause() {
+            const m = video || music;
+            if (!m) return;
+            if (m.paused) m.resume(); else m.pause();
+            if (video && pb) jf.report('progress', Object.assign({ timeMs: video.at() * 1000, paused: video.paused }, pb));
+            buttons(); touch();
+        }
+
         /** another target while a video plays: it starts again there, where it was */
         settings.onChange((k) => {
             if (k === 'signOut' && settings.get('signOut')) {
@@ -312,7 +336,8 @@ mgu.run({
                 stopAll(); conf.token = ''; conf.userId = ''; save();          // (the address stays: signing in again is shorter)
                 jf.token = ''; jf.userId = ''; stack = []; status = 'Signed out'; setPage('server');
             }
-            if ((k === 'target' || k === 'quality') && video && playing && !playing.audio) {
+            if (k === 'debug' && !debug() && page === 'diag') setPage('player');
+            if ((k === 'target' || k === 'quality' || k === 'buffer') && video && playing && !playing.audio) {
                 playVideo(playing, where());
             }
             touch();
@@ -322,7 +347,7 @@ mgu.run({
         const BTN = {
             server: () => [['BTN1', srvMode === 'quick' ? 'New code' : 'Quick Connect'], ['BTN2', srvMode === 'form' ? 'Sign in' : 'Enter by hand']],
             browse: () => [['BTN1', 'Open / Play'], ['BTN2', 'Back']],
-            player: () => [['BTN1', 'Stop'], ['BTN2', music ? 'Next track' : 'Restart']],
+            player: () => [['BTN1', isPaused() ? 'Play' : 'Pause'], ['BTN2', 'Stop']],
             diag: () => [['BTN1', 'Clear log'], ['BTN2', 'Back to browse']],
         };
         function buttons() { BTN[page]().forEach(([n, l]) => { try { ui.text(n, l); } catch (e) { /* ignore */ } }); }
@@ -333,19 +358,19 @@ mgu.run({
         ui.onClick('BTN1', () => {
             if (page === 'server') quickConnect();
             else if (page === 'browse') choose();
-            else if (page === 'player') { stopAll(); playing = null; }
+            else if (page === 'player') togglePause();
             else if (page === 'diag') ring.length = 0;
             buttons(); touch();
         });
         ui.onClick('BTN2', () => {
             if (page === 'server') { if (srvMode === 'form') signInPassword(); else { stopQuick(); srvMode = 'form'; field = conf.base ? 'user' : 'url'; status = 'Server address (http://IP:8096), then Quick Connect - or user and password'; } }
             else if (page === 'browse') back();
-            else if (page === 'player') { if (music) music.next(); else if (playing) playVideo(playing, 0); }
+            else if (page === 'player') { stopAll(); playing = null; }
             else if (page === 'diag') setPage('browse');
             buttons(); touch();
         });
-        ui.onClick('BTN_PAGE', () => setPage(PAGES[(PAGES.indexOf(page) + 1) % PAGES.length]));
-        ctx.onTab((i) => { if (PAGES[i]) setPage(PAGES[i]); });
+        ui.onClick('BTN_PAGE', () => setPage(PAGES()[(PAGES().indexOf(page) + 1) % PAGES().length]));
+        ctx.onTab((i) => { if (PAGES()[i]) setPage(PAGES()[i]); });
 
         ctx.onTap((x, y) => {
             if (page === 'browse') {
@@ -353,6 +378,8 @@ mgu.run({
                 if (!c) return;
                 const i = c.top + Math.floor((y - LIST_Y) / ROW_H);
                 if (y >= LIST_Y && i >= 0 && i < c.items.length && i < c.top + ROWS) { if (c.sel === i) choose(); else { c.sel = i; touch(); } }
+            } else if (page === 'player' && video && video.screen() && x >= SCR.x && x < SCR.x + SCR.w && y >= SCR.y && y < SCR.y + SCR.h) {
+                togglePause();
             } else if (page === 'server' && srvMode === 'form') {
                 const f = FIELDS.find((d) => x >= d[2] && x < d[2] + d[3]);
                 if (y >= 96 && y < 140 && f) field = f[0];
@@ -379,8 +406,9 @@ mgu.run({
             press() {
                 if (page === 'browse') choose();
                 else if (page === 'server' && srvMode === 'form') keyPress(keyboard.current());
+                else if (page === 'player') togglePause();
             },
-        }, () => page === 'browse' || (page === 'server' && srvMode === 'form') || (page === 'player' && !!music));
+        }, () => page === 'browse' || (page === 'server' && srvMode === 'form') || (page === 'player' && !!(music || video)));
 
         /* ================= drawing ================= */
         const lit = { literal: true };
@@ -450,20 +478,56 @@ mgu.run({
             if (c.items.length > ROWS) cv.text((c.sel + 1) + ' / ' + c.items.length, PIC.x - 40, 512, 16, t.dim, { align: 'right', literal: true });   // (left of the picture)
         }
 
+        /** the MGU display's video (op 19: the renderer reads the frames from the /dev/shm file itself) */
+        const SCR = { x: 40, y: 96, w: 740, h: 416 };
+        let vidDecl = '';
+        function videoGpu() { const g = ctx.display && ctx.display.gpu; return g && g.ready && g.native && g.info && g.info.video ? g : null; }
+        function drawScreen(cv, t, scr) {
+            if (!videoGpu() || typeof cv.video !== 'function') { cv.text('This renderer shows no video (mgu-render needed)', SCR.x, SCR.y + 40, 20, t.warn || t.accent, lit); return; }
+            const key = scr.file + scr.w + 'x' + scr.h;
+            if (vidDecl !== key) { setVideo(VID, scr.file, scr.w, scr.h); vidDecl = key; }
+            cv.fillRect(SCR.x, SCR.y, SCR.w, SCR.h, '#000000');
+            cv.video(VID, SCR.x, SCR.y, SCR.w, SCR.h, 0);
+        }
+
+        const STATE_TEXT = (st) => (/^playing/.test(st) ? 'Playing' : /^(starting|loading|buffering)/.test(st) ? 'Loading...' : st === 'done' ? 'Finished'
+            : /^error/.test(st) ? st.replace(/^error: /, 'Error: ') : st === 'stopped' ? 'Stopped' : st);
+
         function drawPlayer(cv, t) {
-            if (!playing) { header(cv, t, 'Nothing plays'); cv.text('Choose a video or music in Browse.', 40, 130, 22, t.dim, lit); return; }
+            if (!playing) { header(cv, t, 'Nothing plays'); cv.text(status || 'Choose a video or music in Browse.', 40, 130, 22, t.dim, lit); return; }
             header(cv, t, playing.title + (playing.sub ? '  -  ' + playing.sub : ''));
-            drawPic(cv, t, playing.img, PIC.x, 96);
+            const scr = video && video.screen();
+            if (scr) drawScreen(cv, t, scr); else drawPic(cv, t, playing.img, PIC.x, 96);
+            // the text: right of the MGU display's picture, else left of the poster
+            const x = scr ? SCR.x + SCR.w + 40 : 40, wTxt = scr ? W - x - 40 : PIC.x - 80, chars = Math.floor(wTxt / 10);
+            const say = (str, y, size, col) => cv.text(String(str).slice(0, chars), x, y, size, col, lit);
             if (video) {
                 const parked = gate.parked();
-                cv.text('Video on: ' + TARGET_NAME[video.target] + (parked ? '' : '  -  picture paused: not parked (the sound goes on)'), 40, 116, 22, parked ? t.accent : t.warn, lit);
-                cv.text('Position ' + fmt(where()) + (playing.duration ? ' / ' + fmt(playing.duration / 1000) : ''), 40, 150, 22, t.text, lit);
-                lines(cv, t, video.lines().slice(0, 9), 190, 18, 0, playing.img ? 118 : 150);   // (beside the picture)
+                const st = video.paused ? 'Paused' : !parked ? 'Picture only while parked (P) - the sound goes on' : STATE_TEXT(video.state);
+                say(st, 120, 24, !parked || /^Error/.test(st) ? (t.warn || t.accent) : t.text);
+                say('Video on: ' + TARGET_NAME[video.target], 156, 20, t.dim);
+                // where it is
+                const pos = where(), dur = playing.duration / 1000, bw = Math.min(wTxt, 700);
+                cv.fillRect(x, 186, bw, 8, withAlpha('#ffffff', 0.15));
+                if (dur > 0) cv.fillRect(x, 186, Math.round(bw * Math.min(1, pos / dur)), 8, t.accent);
+                say(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : ''), 226, 22, t.text);
+                if (video.buf) say('Buffer: ' + fmtAhead(video.buf.ahead()) + ' ahead', 260, 18, t.dim);
+                const hint = video.hint();
+                if (hint && !debug()) {                    // (what the user must do: in two lines)
+                    say(hint.slice(0, hint.indexOf(' - ') + 1), 420, 18, t.warn || t.accent);
+                    say(hint.slice(hint.indexOf(' - ') + 3), 446, 18, t.warn || t.accent);
+                }
+                if (debug()) video.lines().slice(0, 9).forEach((l, i) => cv.text(String(l).slice(0, scr ? 60 : 118), x, 300 + i * 22, 16, t.dim, lit));
+                else say((isPaused() ? 'Play' : 'Pause') + ': press the controller or the button below.', 480, 18, t.dim);
             } else if (music) {
-                lines(cv, t, music.lines(), 116, 22, 0, playing.img ? 95 : 150);
-                cv.text('Turn or tilt the controller: previous / next track. Plays while driving too.', 40, 480, 18, t.dim, lit);
-            } else cv.text(status, 40, 116, 22, t.dim, lit);
+                const L = music.lines();
+                say(L[0].replace(/^music: /, ''), 120, 24, t.text);
+                if (L[1]) say(L[1], 160, 20, t.dim);
+                if (debug()) L.slice(2).forEach((l, i) => say(l, 200 + i * 24, 18, t.dim));
+                say('Press the controller: pause / play. Turn or tilt: previous / next track. Plays while driving too.', 480, 18, t.dim);
+            } else say(status, 120, 22, t.dim);
         }
+        const fmtAhead = (sec) => Math.floor(sec / 60) + ':' + ('0' + Math.floor(sec % 60)).slice(-2);
         const two = (n) => (n < 10 ? '0' : '') + n;
         const fmt = (s) => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + ':' + two(Math.floor(s / 60) % 60) + ':' + two(s % 60); };
 
@@ -492,7 +556,7 @@ mgu.run({
                 drawErr = (e && e.message) || String(e);
                 cv.text('Drawing failed: ' + drawErr, 40, 480, 18, t.warn || t.accent, lit);
             }
-            G.frame(cv, t, TABS, PAGES.indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: 'PLAYING' }]);
+            G.frame(cv, t, TABS(), PAGES().indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
             return ui.image('MAIN_GFX', cv);
         }
         ctx.loop('MAIN', 4, render);

@@ -92,11 +92,13 @@ function fakeClient() {
     c.video = (o) => { const r = next++; c.made++; c.layers.set(r, o); return r; };
     c.frame = (ref, atlas) => { if (!c.layers.has(ref)) return false; c.frames.push({ ref, y: atlas[0], u: atlas[64 * 48], v: atlas[64 * 48 + 32] }); return true; };
     c.drop = (ref) => { c.layers.delete(ref); c.dropped.push(ref); };
+    c.sets = [];
+    c.set = (ref, o) => { c.sets.push([ref, o.visible]); };
     c.close = () => {};
     return c;
 }
 
-test('ClusterVideo: frames go to a video layer while parked; driving off drops it, parked again it comes back', async () => {
+test('ClusterVideo: frames go to a video layer while parked; driving off hides it, parked again it shows again (the same layer)', async () => {
     const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="avc1.42c00a",RESOLUTION=64x48\nv.m3u8\n';
     const media = '#EXTM3U\n#EXTINF:1.0,\ns0.ts\n#EXTINF:1.0,\ns1.ts\n#EXT-X-ENDLIST\n';
     const files = { 'http://x/p.m3u8': master, 'http://x/v.m3u8': media, 'http://x/s0.ts': SEG[0], 'http://x/s1.ts': SEG[1] };
@@ -115,7 +117,8 @@ test('ClusterVideo: frames go to a video layer while parked; driving off drops i
     assert.ok(client.frames.length >= 3 && client.frames[0].v > 200, 'red frames: ' + JSON.stringify(client.frames.slice(0, 2)));
     parked = false;
     await wait(100);
-    assert.deepStrictEqual(client.dropped, [ref]);
+    assert.deepStrictEqual(client.sets, [[ref, 0]], 'hidden, not dropped (as waze: the middle is not given up and taken over again)');
+    assert.deepStrictEqual(client.dropped, []);
     assert.ok(/^paused: not parked/.test(v.state), v.state);
     const sent = client.frames.length;
     await wait(300);
@@ -124,7 +127,8 @@ test('ClusterVideo: frames go to a video layer while parked; driving off drops i
     await wait(700);
     parked = true;
     await wait(400);
-    assert.strictEqual(client.made, 2, 'a new layer once parked again');
+    assert.strictEqual(client.made, 1, 'the same layer once parked again');
+    assert.deepStrictEqual(client.sets, [[ref, 0], [ref, 1]]);
     const last = client.frames[client.frames.length - 1];
     assert.ok(last.u > 200, 'blue after the pause: ' + JSON.stringify(last));
     await wait(1200);
@@ -198,7 +202,8 @@ test('ClusterVideo: BMW content keeps the slot -> a hint on Diag after 8 s, logg
     assert.strictEqual(v.events.filter((e) => /behind stock/.test(e)).length, 1);
     assert.ok(!/NOT SHOWN/.test(v.lines().join('\n')));
     v.stockSince -= 9000;
-    assert.ok(/^NOT SHOWN: BMW content on the cluster holds this area/.test(v.lines()[0]), v.lines()[0]);
+    assert.ok(/^NOT SHOWN: BMW content holds the cluster middle - set Instrument cluster > Central display area to Map view/.test(v.lines()[0]), v.lines()[0]);
+    assert.ok(/Map view/.test(v.hint()), 'the hint without Debug on too');
     client.emit('layer', ref, 'shown', '');
     assert.ok(!/NOT SHOWN/.test(v.lines().join('\n')));
     v.stop();

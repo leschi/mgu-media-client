@@ -2,7 +2,7 @@
   "id": "media",
   "title": "Media Client",
   "description": "Videos and music from your Jellyfin server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Enter the server's address, then sign in with Quick Connect (a code in your Jellyfin app) or user name and password.",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "vendor": "custom",
   "loggingId": "OAMC",
   "iconGlyph": "MC",
@@ -56,7 +56,8 @@
       "options": [
         ["map", "Cluster middle (between the gauges)"],
         ["panel", "Whole cluster"],
-        ["hud", "Head-up display"]
+        ["hud", "Head-up display"],
+        ["cid", "MGU display (this screen, the Player page)"]
       ]
     },
     {
@@ -65,8 +66,19 @@
       "type": "choice",
       "default": "smooth",
       "options": [
-        ["smooth", "Smooth (480x270, fits the cluster's upload limit)"],
-        ["sharp", "Sharp (640x360, may stutter)"]
+        ["smooth", "Smooth (480x270, 30 fps)"],
+        ["sharp", "Sharp (640x360; 15 fps on the cluster / HUD to fit their upload limit)"]
+      ]
+    },
+    {
+      "key": "buffer",
+      "label": "Video buffer (fetched ahead onto the unit's flash)",
+      "type": "choice",
+      "default": "600",
+      "options": [
+        ["600", "10 minutes (about 100 MB, emptied at the end)"],
+        ["120", "2 minutes"],
+        ["15", "15 seconds (in memory only, as before)"]
       ]
     },
     {
@@ -74,6 +86,12 @@
       "label": "Resume videos where you stopped",
       "type": "bool",
       "default": true
+    },
+    {
+      "key": "debug",
+      "label": "Debug on (technical details on the Player page, the Diag page)",
+      "type": "bool",
+      "default": false
     },
     {
       "key": "signOut",

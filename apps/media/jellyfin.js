@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.2.3';
+const VERSION = '0.3.0';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -213,7 +213,7 @@ class Jellyfin {
             MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, DeviceId: this.deviceId, ApiKey: this.token, api_key: this.token,
             VideoCodec: 'h264', AudioCodec: 'aac', SegmentContainer: 'ts', Profile: 'baseline', 'h264-profile': 'baseline', Level: 31, 'h264-level': 31,
             MaxWidth: w, MaxHeight: h, VideoBitrate: o.bitrate || 1200000, AudioBitrate: 160000, AudioChannels: 2, TranscodingMaxAudioChannels: 2,
-            MaxFramerate: 30, AllowVideoStreamCopy: false, AllowAudioStreamCopy: false, BreakOnNonKeyFrames: false, RequireAvc: false,
+            MaxFramerate: o.fps || 30, AllowVideoStreamCopy: false, AllowAudioStreamCopy: false, BreakOnNonKeyFrames: false, RequireAvc: false,
             SubtitleMethod: o.subtitleIndex != null ? 'Encode' : undefined, SubtitleStreamIndex: o.subtitleIndex,
         });
     }
@@ -232,7 +232,7 @@ class Jellyfin {
     report(state, o) {
         const p = { start: '/Sessions/Playing', progress: '/Sessions/Playing/Progress', stop: '/Sessions/Playing/Stopped' }[state];
         const body = { ItemId: o.id, MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, PositionTicks: Math.round((o.timeMs || 0) * TICKS),
-            PlayMethod: 'Transcode', CanSeek: true, IsPaused: false };
+            PlayMethod: 'Transcode', CanSeek: true, IsPaused: !!o.paused };
         return this._call('POST', p, body, { timeout: 8000 }).catch(() => {});
     }
 

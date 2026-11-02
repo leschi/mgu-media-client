@@ -52,7 +52,7 @@ class MusicPlayer {
 
     lines() {
         const t = this.current();
-        return ['music: ' + this.state + (t ? ' - ' + (this.i + 1) + '/' + this.tracks.length + ' ' + t.title + (t.sub ? ' (' + t.sub + ')' : '') : ''),
+        return ['music: ' + (this.paused ? 'paused' : this.state) + (t ? ' - ' + (this.i + 1) + '/' + this.tracks.length + ' ' + t.title + (t.sub ? ' (' + t.sub + ')' : '') : ''),
             this.line].filter(Boolean).concat(this.events);
     }
 
@@ -100,7 +100,7 @@ class MusicPlayer {
 
     async _go(i, g) {
         this.i = i;
-        this.played = false;
+        this.played = false; this.paused = false;
         this.state = 'fetching';
         this._tidy();
         try {
@@ -118,7 +118,7 @@ class MusicPlayer {
 
     /** the player's time; at a track's end, the next one */
     _poll() {
-        if (!this.media || this.state === 'fetching') return;
+        if (!this.media || this.state === 'fetching' || this.paused) return;      // (paused: not the end of the track)
         Promise.all([this.media.get('currentItemTime'), this.media.get('playerState')]).then((r) => {
             const e = /"elapsed":(\d+)/.exec(r[0]), tot = /"total":(\d+)/.exec(r[0]), playing = /PLAY"/.test(r[1]);
             if (e && tot) this.line = 'time ' + Math.round(+e[1] / 1000) + ' / ' + Math.round(+tot[1] / 1000) + ' s';
@@ -132,6 +132,10 @@ class MusicPlayer {
     }
 
     next() { if (this.i + 1 < this.tracks.length) this._go(this.i + 1, ++this.gen); }
+
+    /** BMW's player paused / on again */
+    pause() { if (!this.media || this.paused) return; this.paused = true; this.media.button('PAUSE').catch(() => {}); this._event('paused'); }
+    resume() { if (!this.media || !this.paused) return; this.paused = false; this.media.button('PLAY').catch(() => {}); this._event('playing on'); }
     prev() { this._go(Math.max(0, this.i - 1), ++this.gen); }
 
     /** resolves once the sound is off and the AudioManager connection gone */
