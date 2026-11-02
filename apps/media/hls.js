@@ -17,7 +17,7 @@ function get(u, opts, hops) {
     opts = opts || {};
     return new Promise((resolve, reject) => {
         // (ecdhCurve auto: node 8 offers only P-256 by default, some servers take P-384 only)
-        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: { 'User-Agent': 'mgu-media' }, ecdhCurve: 'auto' });
+        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: Object.assign({ 'User-Agent': 'mgu-media' }, opts.headers), ecdhCurve: 'auto' });
         const req = (o.protocol === 'http:' ? http : https).get(o, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && (hops || 0) < 3) {
                 res.resume();
@@ -37,7 +37,7 @@ function get(u, opts, hops) {
 }
 
 /** a URL for the log: without its token */
-function hide(u) { return String(u).replace(/(api_key|X-Media-Token|token)=[^&]+/gi, '$1=...'); }
+function hide(u) { return String(u).replace(/(api_?key|X-Media-Token|token)=[^&]+/gi, '$1=...'); }
 
 function attrs(s) {
     const out = {};

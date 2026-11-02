@@ -116,12 +116,14 @@ test('jellyfin: the video URL asks for Baseline H.264 in TS at 480x270; track fi
     const pi = await jf.playbackInfo('m1');
     assert.deepStrictEqual(pi, { mediaSourceId: 'src1', playSessionId: 'ps1', container: 'mkv', audioCodec: 'eac3' });
     const u = jf.videoUrl('m1', pi);
-    assert.ok(u.indexOf('http://s:8096/Videos/m1/master.m3u8?MediaSourceId=src1&PlaySessionId=ps1&DeviceId=dev&api_key=tk&') === 0, u);
+    assert.ok(u.indexOf('http://s:8096/Videos/m1/master.m3u8?MediaSourceId=src1&PlaySessionId=ps1&DeviceId=dev&ApiKey=tk&api_key=tk&') === 0, u);
     for (const p of ['VideoCodec=h264', 'AudioCodec=aac', 'SegmentContainer=ts', 'Profile=baseline', 'h264-profile=baseline', 'MaxWidth=480', 'MaxHeight=270', 'AudioChannels=2', 'AllowVideoStreamCopy=false'])
         assert.ok(u.indexOf('&' + p) > 0, p);
     assert.ok(!/StartTimeTicks/.test(u), 'a start is a segment to start at (hls startAt), not a server offset');
     assert.strictEqual(hide(u).indexOf('tk'), -1, 'the token is not logged');
-    assert.deepStrictEqual(await jf.trackFile('t1'), { url: 'http://s:8096/Audio/t1/stream.flac?static=true&MediaSourceId=t1&api_key=tk', ext: 'flac' });
+    const flac = await jf.trackFile('t1');
+    assert.deepStrictEqual([flac.url, flac.ext], ['http://s:8096/Audio/t1/stream.flac?static=true&MediaSourceId=t1&ApiKey=tk&api_key=tk', 'flac']);
+    assert.ok(/Token="tk"/.test(flac.headers.Authorization), 'the token in the header too');
     const opus = await jf.trackFile('t2');
     assert.strictEqual(opus.ext, 'mp3'); assert.ok(/stream\.mp3\?AudioCodec=mp3&/.test(opus.url), opus.url);   // (opus: made an mp3)
     assert.strictEqual((await jf.trackFile('t3')).ext, 'm4a');

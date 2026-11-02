@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -188,12 +188,19 @@ class Jellyfin {
         return { mediaSourceId: ms.Id || String(id).replace(/-/g, ''), playSessionId: (j && j.PlaySessionId) || '', container: ms.Container || '', audioCodec: a ? a.Codec || '' : '' };
     }
 
+    /**
+     * The token for the streams (playlists, segments, track files): in the URL as ApiKey (10.11 on;
+     * api_key, the old name, is off there by default: http 401 on the car with 12.4) and api_key (older
+     * servers), and in the Authorization header, which the server's own segment URLs do not carry
+     */
+    streamHeaders() { return { Authorization: this.auth() }; }
+
     /** the HLS transcode of a video: H.264 Baseline at w x h, stereo AAC, TS segments */
     videoUrl(id, o) {
         o = o || {};
         const w = o.width || 480, h = o.height || 270;
         return this.base + '/Videos/' + id + '/master.m3u8?' + qs({
-            MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, DeviceId: this.deviceId, api_key: this.token,
+            MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, DeviceId: this.deviceId, ApiKey: this.token, api_key: this.token,
             VideoCodec: 'h264', AudioCodec: 'aac', SegmentContainer: 'ts', Profile: 'baseline', 'h264-profile': 'baseline', Level: 31, 'h264-level': 31,
             MaxWidth: w, MaxHeight: h, VideoBitrate: o.bitrate || 1200000, AudioBitrate: 160000, AudioChannels: 2, TranscodingMaxAudioChannels: 2,
             MaxFramerate: 30, AllowVideoStreamCopy: false, AllowAudioStreamCopy: false, BreakOnNonKeyFrames: false, RequireAvc: false,
@@ -206,8 +213,9 @@ class Jellyfin {
         const pi = await this.playbackInfo(id);
         const c = String(pi.container).toLowerCase(), codec = String(pi.audioCodec).toLowerCase();
         const ok = AUDIO_OK.find((x) => x[0].test(c) && (!x[2] || x[2].test(codec)));
-        if (ok) return { url: this.base + '/Audio/' + id + '/stream.' + ok[1] + '?' + qs({ static: true, MediaSourceId: pi.mediaSourceId, api_key: this.token }), ext: ok[1] };
-        return { url: this.base + '/Audio/' + id + '/stream.mp3?' + qs({ AudioCodec: 'mp3', AudioBitrate: 256000, MediaSourceId: pi.mediaSourceId, DeviceId: this.deviceId, api_key: this.token }), ext: 'mp3' };
+        const key = { ApiKey: this.token, api_key: this.token }, headers = this.streamHeaders();
+        if (ok) return { url: this.base + '/Audio/' + id + '/stream.' + ok[1] + '?' + qs(Object.assign({ static: true, MediaSourceId: pi.mediaSourceId }, key)), ext: ok[1], headers };
+        return { url: this.base + '/Audio/' + id + '/stream.mp3?' + qs(Object.assign({ AudioCodec: 'mp3', AudioBitrate: 256000, MediaSourceId: pi.mediaSourceId, DeviceId: this.deviceId }, key)), ext: 'mp3', headers };
     }
 
     /** where it is: the server's "continue watching" and played marks (state: start | progress | stop) */

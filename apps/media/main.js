@@ -243,7 +243,7 @@ mgu.run({
             const p = { id: it.id, mediaSourceId: info.mediaSourceId, playSessionId: info.playSessionId || crypto.randomBytes(8).toString('hex') };
             pb = p;
             const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 2000000 : 1200000 }, p));
-            video = new ClusterVideo({ url, startAt: from, target: settings.get('target') || 'map', gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            video = new ClusterVideo({ url, headers: jf.streamHeaders(), startAt: from, target: settings.get('target') || 'map', gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));

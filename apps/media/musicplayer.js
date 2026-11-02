@@ -16,9 +16,9 @@ const url = require('url');
 const POLL_MS = 2000;
 
 /** a URL streamed to a file (not held in memory: a FLAC is 30 MB); resolves with its size */
-function download(u, file, lookup, ms) {
+function download(u, file, lookup, ms, headers) {
     return new Promise((resolve, reject) => {
-        const o = Object.assign(url.parse(u), { lookup, ecdhCurve: 'auto' });      // (as ./jellyfin: node 8's P-256 only refused)
+        const o = Object.assign(url.parse(u), { lookup, ecdhCurve: 'auto', headers: headers || {} });      // (as ./jellyfin: node 8's P-256 only refused)
         const req = (o.protocol === 'http:' ? http : https).get(o, (res) => {
             if (res.statusCode !== 200) { res.resume(); return reject(new Error('http ' + res.statusCode)); }
             const out = fs.createWriteStream(file, { mode: 0o644 });
@@ -65,7 +65,7 @@ class MusicPlayer {
         entry.ready = this.o.server.trackFile(t.id).then((f) => {
             const ext = String(f.ext || 'mp3').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'mp3';
             entry.file = this.tmp + '/mgu-media-track' + i + '.' + ext;
-            return (this.o.download || download)(f.url, entry.file, this.o.lookup);
+            return (this.o.download || download)(f.url, entry.file, this.o.lookup, 0, f.headers);
         }).then((n) => { this._event('fetched ' + (i + 1) + ': ' + (n / 1e6).toFixed(1) + ' MB'); return entry.file; });
         const ready = entry.ready;
         this.files[i] = entry;

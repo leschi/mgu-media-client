@@ -105,7 +105,7 @@ class ClusterVideo {
         this.running = true;
         try {
             this.dec = H264Decoder.load();
-            this.src = this.o.source || new HlsSource(this.o.url, { lookup: this.o.lookup, maxWidth: 1088, maxBps: this.quality === 'smooth' ? BUDGET_BPS : 0, get: this.o.get, anyProfile: this.o.anyProfile, startAt: this.o.startAt });
+            this.src = this.o.source || new HlsSource(this.o.url, { lookup: this.o.lookup, maxWidth: 1088, maxBps: this.quality === 'smooth' ? BUDGET_BPS : 0, get: this.o.get, anyProfile: this.o.anyProfile, startAt: this.o.startAt, headers: this.o.headers });
             this.state = 'loading the playlist';
             if (!this.src.video) await this.src.open();
             if (!this.running) return;
