@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -65,8 +65,10 @@ function item(m) {
         : t === 'Season' ? m.SeriesName || ''
         : t === 'CollectionFolder' || t === 'UserView' ? m.CollectionType || ''
         : m.ProductionYear ? String(m.ProductionYear) : '';
-    const ud = m.UserData || {};
-    return { id: m.Id, title: m.Name || '?', sub, type: t, kind: m.CollectionType || '', leaf, audio: t === 'Audio',
+    const ud = m.UserData || {}, tags = m.ImageTags || {};
+    // the picture: its own, else the series' (an episode without one) or the album's (a track)
+    const img = tags.Primary ? m.Id : m.SeriesPrimaryImageTag ? m.SeriesId : m.AlbumPrimaryImageTag ? m.AlbumId : null;
+    return { id: m.Id, title: m.Name || '?', sub, type: t, kind: m.CollectionType || '', leaf, audio: t === 'Audio', img,
         duration: Math.round((m.RunTimeTicks || 0) / TICKS), offset: Math.round((ud.PlaybackPositionTicks || 0) / TICKS) };
 }
 
@@ -163,7 +165,7 @@ class Jellyfin {
     /** what is in a library or folder: a music library by its albums, a series by its seasons */
     async children(it, max) {
         const q = { UserId: this.userId, ParentId: it.id, SortBy: 'SortName', SortOrder: 'Ascending', Limit: max || 300, StartIndex: 0,
-            Fields: 'ProductionYear', EnableImages: false };
+            Fields: 'ProductionYear', EnableImages: true, ImageTypeLimit: 1, EnableImageTypes: 'Primary' };
         if (it.kind === 'music') Object.assign(q, { IncludeItemTypes: 'MusicAlbum', Recursive: true, SortBy: 'AlbumArtist,SortName' });
         else if (it.kind === 'tvshows') Object.assign(q, { IncludeItemTypes: 'Series' });
         else if (it.kind === 'movies') Object.assign(q, { IncludeItemTypes: 'Movie,BoxSet', Recursive: true });
@@ -175,7 +177,7 @@ class Jellyfin {
 
     /** continue watching */
     async resume(max) {
-        const j = await this._user('/UserItems/Resume', '/Users/' + this.userId + '/Items/Resume', { UserId: this.userId, Limit: max || 50, MediaTypes: 'Video', EnableImages: false });
+        const j = await this._user('/UserItems/Resume', '/Users/' + this.userId + '/Items/Resume', { UserId: this.userId, Limit: max || 50, MediaTypes: 'Video', EnableImages: true, ImageTypeLimit: 1, EnableImageTypes: 'Primary' });
         return ((j && j.Items) || []).map(item);
     }
 
@@ -194,6 +196,14 @@ class Jellyfin {
      * servers), and in the Authorization header, which the server's own segment URLs do not carry
      */
     streamHeaders() { return { Authorization: this.auth() }; }
+
+    /** an item's picture (poster, cover) as a PNG no larger than w x h (./png decodes it) */
+    async image(id, w, h) {
+        const r = await this.req('GET', this.base + '/Items/' + id + '/Images/Primary?' + qs({ maxWidth: w, maxHeight: h, format: 'Png', ApiKey: this.token }),
+            { headers: this.streamHeaders(), lookup: this.lookup, timeout: 15000 });
+        if (r.status !== 200) throw new Error('picture: http ' + r.status);
+        return r.body;
+    }
 
     /** the HLS transcode of a video: H.264 Baseline at w x h, stereo AAC, TS segments */
     videoUrl(id, o) {

@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const kbd = require('./keyboard');
+const png = require('./png');
 const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
 const { MusicPlayer } = require('./musicplayer');
@@ -30,6 +31,7 @@ const W = 1600, H = 520;
 const TABS = ['Server', 'Browse', 'Player', 'Diag'];
 const PAGES = ['server', 'browse', 'player', 'diag'];
 const ROWS = 8, ROW_H = 52, LIST_Y = 92;
+const PIC = { x: W - 330, w: 290, h: 410 };       // the picture of the chosen item, right of the list
 const TARGET_NAME = { map: 'Cluster middle', panel: 'Whole cluster', hud: 'Head-up display' };
 
 mgu.run({
@@ -176,6 +178,33 @@ mgu.run({
                 else signInPassword();
             }
             touch();
+        }
+
+        /* ================= pictures (posters, covers) ================= */
+        // fetched once the selection rests (turning through a list fetches nothing), kept for the last 16
+        const pics = new Map();                // img id -> { w, h, rgba } | 'loading' | 'none'
+        let picWant = null, picTimer = null;
+        function picture(img) {
+            if (!img) return null;
+            const p = pics.get(img);
+            if (p !== undefined) return typeof p === 'object' ? p : null;
+            if (picWant !== img) {
+                picWant = img;
+                clearTimeout(picTimer);
+                picTimer = setTimeout(() => {
+                    pics.set(img, 'loading');
+                    jf.image(img, PIC.w, PIC.h).then((b) => png.decode(b)).then((d) => pics.set(img, d), (e) => { pics.set(img, 'none'); log.warn(e.message); })
+                        .then(() => { while (pics.size > 16) pics.delete(pics.keys().next().value); if (picWant === img) picWant = null; touch(); });
+                }, 300);
+            }
+            return null;
+        }
+        /** a picture fitted into the box at x, y (kept in proportion, centred) */
+        function drawPic(cv, t, img, x, y) {
+            const p = picture(img);
+            if (!p) return;
+            const s = Math.min(PIC.w / p.w, PIC.h / p.h), w = Math.round(p.w * s), h = Math.round(p.h * s);
+            cv.drawImage(p.rgba, p.w, p.h, x + Math.round((PIC.w - w) / 2), y + Math.round((PIC.h - h) / 2), w, h);
         }
 
         /* ================= Browse ================= */
@@ -342,7 +371,7 @@ mgu.run({
         /* ================= drawing ================= */
         const lit = { literal: true };
         function header(cv, t, title) { cv.text(title, 40, 74, 26, t.text, { font: 'bold', literal: true }); }
-        function lines(cv, t, L, y, size, max) { L.slice(0, max || 20).forEach((l, i) => cv.text(String(l).slice(0, 150), 40, y + i * (size + 8), size, i === 0 ? t.text : t.dim, lit)); }
+        function lines(cv, t, L, y, size, max, chars) { L.slice(0, max || 20).forEach((l, i) => cv.text(String(l).slice(0, chars || 150), 40, y + i * (size + 8), size, i === 0 ? t.text : t.dim, lit)); }
 
         function drawServer(cv, t) {
             header(cv, t, 'Jellyfin server');
@@ -397,24 +426,27 @@ mgu.run({
                 const i = c.top + k, it = c.items[i];
                 if (!it) break;
                 const y = LIST_Y + k * ROW_H;
-                if (i === c.sel) cv.fillRect(30, y, W - 60, ROW_H - 4, withAlpha(t.sel || t.accent, 0.25));
+                if (i === c.sel) cv.fillRect(30, y, PIC.x - 50, ROW_H - 4, withAlpha(t.sel || t.accent, 0.25));
                 cv.text((it.leaf ? '' : '+ ') + it.title, 50, y + 34, 24, t.text, lit);
                 const right = [it.sub, it.leaf && it.duration ? Math.round(it.duration / 60000) + ' min' : '', it.offset > 30000 ? 'resume ' + Math.round(it.offset / 60000) + ' min' : ''].filter(Boolean).join('   ');
-                if (right) cv.text(right, W - 50, y + 34, 20, t.dim, { align: 'right', literal: true });
+                if (right) cv.text(right, PIC.x - 40, y + 34, 20, t.dim, { align: 'right', literal: true });
             }
+            const it = c.items[c.sel];
+            if (it) drawPic(cv, t, it.img, PIC.x, LIST_Y);
             if (c.items.length > ROWS) cv.text((c.sel + 1) + ' / ' + c.items.length, W - 40, 506, 18, t.dim, { align: 'right', literal: true });
         }
 
         function drawPlayer(cv, t) {
             if (!playing) { header(cv, t, 'Nothing plays'); cv.text('Choose a video or music in Browse.', 40, 130, 22, t.dim, lit); return; }
             header(cv, t, playing.title + (playing.sub ? '  -  ' + playing.sub : ''));
+            drawPic(cv, t, playing.img, PIC.x, 96);
             if (video) {
                 const parked = gate.parked();
                 cv.text('Video on: ' + TARGET_NAME[video.target] + (parked ? '' : '  -  picture paused: not parked (the sound goes on)'), 40, 116, 22, parked ? t.accent : t.warn, lit);
                 cv.text('Position ' + fmt(where()) + (playing.duration ? ' / ' + fmt(playing.duration / 1000) : ''), 40, 150, 22, t.text, lit);
-                lines(cv, t, video.lines().slice(0, 9), 190, 18);
+                lines(cv, t, video.lines().slice(0, 9), 190, 18, 0, playing.img ? 118 : 150);   // (beside the picture)
             } else if (music) {
-                lines(cv, t, music.lines(), 116, 22);
+                lines(cv, t, music.lines(), 116, 22, 0, playing.img ? 95 : 150);
                 cv.text('Turn or tilt the controller: previous / next track. Plays while driving too.', 40, 480, 18, t.dim, lit);
             } else cv.text(status, 40, 116, 22, t.dim, lit);
         }

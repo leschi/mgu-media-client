@@ -11,7 +11,7 @@ A media client app for the BMW MGU head unit (iDrive 7) that plays from your own
   - **User name and password** with the on-screen keyboard.
 
   Either way the app keeps only the server's access token (in its data folder, readable by the app only), not the password. *Sign out* in Settings forgets the token.
-- **Browse:** your libraries (movies, shows, music) and *Continue watching*. Videos resume where you stopped, and the server learns how far you got.
+- **Browse:** your libraries (movies, shows, music) and *Continue watching*, with the chosen item's poster or cover beside the list (fetched once the selection rests; `png.js` decodes it, no image library needed). Videos resume where you stopped, and the server learns how far you got.
 
 This project is not affiliated with or endorsed by Jellyfin or BMW.
 
@@ -53,7 +53,7 @@ node test/run.js
 
 The tests also run on Node 8.16, the version on the car. `test/fixtures` holds small generated H.264 / AAC TS segments.
 
-## Known limits (0.2.0)
+## Known limits (0.2.2)
 
 - **H.264 profile:** If the server sends H.264 Main or High despite the Baseline request, the picture stays empty. Diag then names the profile.
 - **Not yet available:**
