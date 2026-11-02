@@ -5,7 +5,7 @@
  * a prior project 0.2.37), the next one fetched while this one plays; a track's file goes once it is over.
  * Sound only: it plays while driving too.
  *
- *   const m = new MusicPlayer({ media, sig, lookup, log });
+ *   const m = new MusicPlayer({ server: jellyfin, sig, lookup, log });   (server.trackFile(id) -> { url, ext })
  *   m.play(tracks, 0); m.next(); m.prev(); m.lines(); await m.stop();
  */
 const fs = require('fs');
@@ -59,12 +59,17 @@ class MusicPlayer {
     _file(i) {
         if (this.files[i]) return this.files[i].ready;
         const t = this.tracks[i];
-        if (!t || !t.part) return Promise.reject(new Error('no file for this track'));
-        const ext = String(t.part.container || 'mp3').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'mp3';
-        const file = this.tmp + '/mgu-media-track' + i + '.' + ext;
-        const ready = (this.o.download || download)(this.o.media.fileUrl(t.part), file, this.o.lookup).then((n) => { this._event('fetched ' + (i + 1) + ': ' + (n / 1e6).toFixed(1) + ' MB'); return file; });
-        this.files[i] = { file, ready };
-        ready.catch(() => { delete this.files[i]; });
+        if (!t) return Promise.reject(new Error('no such track'));
+        const entry = { file: null, ready: null };
+        // the server says which file (its own, or an mp3 it makes): the name takes its kind
+        entry.ready = this.o.server.trackFile(t.id).then((f) => {
+            const ext = String(f.ext || 'mp3').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'mp3';
+            entry.file = this.tmp + '/mgu-media-track' + i + '.' + ext;
+            return (this.o.download || download)(f.url, entry.file, this.o.lookup);
+        }).then((n) => { this._event('fetched ' + (i + 1) + ': ' + (n / 1e6).toFixed(1) + ' MB'); return entry.file; });
+        const ready = entry.ready;
+        this.files[i] = entry;
+        ready.catch(() => { if (this.files[i] === entry) delete this.files[i]; try { if (entry.file) fs.unlinkSync(entry.file); } catch (e) { /* none */ } });
         return ready;
     }
 
@@ -73,14 +78,16 @@ class MusicPlayer {
         Object.keys(this.files).forEach((k) => {
             const i = +k;
             if (i === this.i || i === this.i + 1) return;
-            const f = this.files[k].file;
+            const e = this.files[k];
             delete this.files[k];
-            setTimeout(() => { try { fs.unlinkSync(f); } catch (e) { /* gone */ } }, 1000);
+            // (a file still being fetched goes once it is in)
+            const rm = () => setTimeout(() => { try { if (e.file) fs.unlinkSync(e.file); } catch (x) { /* gone */ } }, 1000);
+            e.ready.then(rm, rm);
         });
     }
 
     async play(tracks, i) {
-        this.tracks = tracks.filter((t) => t.part);
+        this.tracks = tracks.filter((t) => t.audio);
         const g = ++this.gen;
         if (!this.media) {
             this.state = 'connecting';
@@ -134,7 +141,10 @@ class MusicPlayer {
         const m = this.media;
         this.media = null;
         this.state = 'off';
-        Object.keys(this.files).forEach((k) => { const f = this.files[k].file; setTimeout(() => { try { fs.unlinkSync(f); } catch (e) { /* gone */ } }, 1500); });
+        Object.keys(this.files).forEach((k) => {
+            const e = this.files[k], rm = () => setTimeout(() => { try { if (e.file) fs.unlinkSync(e.file); } catch (x) { /* gone */ } }, 1500);
+            e.ready.then(rm, rm);
+        });
         this.files = {};
         return m ? m.close().catch(() => {}) : Promise.resolve();
     }

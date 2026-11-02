@@ -1,7 +1,7 @@
 'use strict';
 /**
  * tsdemux.js - an MPEG-TS segment (HLS) taken apart: PAT -> PMT -> the H.264 video's PES packets as
- * access units of NAL units with their time (pts, seconds), and the AAC (ADTS) sound's bytes. A Media
+ * access units of NAL units with their time (pts, seconds), and the AAC (ADTS) sound's bytes. A server's
  * transcode carries both in one segment; a stream with a separate audio rendition has video only.
  *
  *   const aus = demuxTs(segment);                // [{ pts, nals: [Buffer, ...] }, ...]

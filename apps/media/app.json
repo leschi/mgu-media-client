@@ -1,8 +1,8 @@
 {
   "id": "media",
   "title": "Media Client",
-  "description": "Videos and music from your Media Media Server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Sign in with a code at media.tv/link, or enter the server's address and a token.",
-  "version": "0.1.0",
+  "description": "Videos and music from your Jellyfin server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Enter the server's address, then sign in with Quick Connect (a code in your Jellyfin app) or user name and password.",
+  "version": "0.2.0",
   "vendor": "custom",
   "loggingId": "OAMC",
   "iconGlyph": "MC",
@@ -40,7 +40,7 @@
       "kind": "canvas",
       "title": "Media Client",
       "buttons": [
-        ["BTN1", "Sign in"],
+        ["BTN1", "Quick Connect"],
         ["BTN2", "Enter by hand"],
         ["BTN_PAGE", "Next page"],
         ["BTN_SETTINGS", "Settings"]
@@ -77,7 +77,7 @@
     },
     {
       "key": "signOut",
-      "label": "Sign out (forget the server and token)",
+      "label": "Sign out (forget the access token)",
       "type": "bool",
       "default": false
     }

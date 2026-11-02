@@ -16,13 +16,13 @@ const url = require('url');
 function get(u, opts, hops) {
     opts = opts || {};
     return new Promise((resolve, reject) => {
-        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: { 'User-Agent': 'a prior project' } });
+        const o = Object.assign(url.parse(u), { lookup: opts.lookup, headers: { 'User-Agent': 'mgu-media' } });
         const req = (o.protocol === 'http:' ? http : https).get(o, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && (hops || 0) < 3) {
                 res.resume();
                 return resolve(get(url.resolve(u, res.headers.location), opts, (hops || 0) + 1));
             }
-            if (res.statusCode !== 200) { res.resume(); return reject(new Error('http ' + res.statusCode + ' ' + u)); }
+            if (res.statusCode !== 200) { res.resume(); return reject(new Error('http ' + res.statusCode + ' ' + hide(u))); }
             const parts = [];
             res.on('data', (d) => parts.push(d));
             res.on('end', () => resolve(Buffer.concat(parts)));
@@ -31,9 +31,12 @@ function get(u, opts, hops) {
         });
         req.on('error', reject);
         const ms = opts.timeout || 20000;
-        req.setTimeout(ms, () => { req.abort(); reject(new Error('no answer in ' + ms / 1000 + ' s: ' + u)); });
+        req.setTimeout(ms, () => { req.abort(); reject(new Error('no answer in ' + ms / 1000 + ' s: ' + hide(u))); });
     });
 }
+
+/** a URL for the log: without its token */
+function hide(u) { return String(u).replace(/(api_key|X-Media-Token|token)=[^&]+/gi, '$1=...'); }
 
 function attrs(s) {
     const out = {};
@@ -108,6 +111,7 @@ class HlsSource {
     constructor(u, opts) {
         this.url = u; this.opts = opts || {}; this.video = null; this.audio = null;
         this.cache = new Map(); this.inflight = new Map(); this.warn = '';
+        this.startT = 0; this.dropped = new Set();
     }
 
     get(u) { return (this.opts.get || get)(u, this.opts); }
@@ -136,6 +140,7 @@ class HlsSource {
         if (/#EXTINF:/.test(text)) {          // a media playlist straight away: no codec info, try it
             const mi = parseMediaInfo(text, this.url);
             this.video = { width: 0, height: 0, codecs: '', url: this.url, segs: mi.segs, ended: mi.ended };
+            if (this.opts.startAt > 0) this._skip(this.opts.startAt);
             return this;
         }
         const m = parseMaster(text, this.url);
@@ -150,7 +155,25 @@ class HlsSource {
         this.video = { width: v.width, height: v.height, fps: v.fps, codecs: v.codecs, url: v.url, segs: mi.segs, ended: mi.ended };
         const au = m.audio[v.audio];
         if (au) { const ai = parseMediaInfo(String(await this.get(au)), au); this.audio = { url: au, segs: ai.segs, ended: ai.ended }; }
+        if (this.opts.startAt > 0) this._skip(this.opts.startAt);
         return this;
+    }
+
+    /**
+     * Start at the segment holding t (a playlist of the whole video, as Jellyfin's: its transcoder starts
+     * at the segment asked for): the earlier segments go, times count from that one; startT is where it is.
+     */
+    _skip(t) {
+        const from = (segs, at) => { let i = 0; while (i + 1 < segs.length && segs[i + 1].t <= at + 0.001) i++; return i; };
+        const v = this.video;
+        if (!v.segs.length) return;
+        this.startT = v.segs[from(v.segs, t)].t;
+        for (const pl of [this.video, this.audio]) {
+            if (!pl || !pl.segs.length) continue;
+            const i = from(pl.segs, this.startT);
+            pl.segs.slice(0, i).forEach((sg) => this.dropped.add(sg.url));
+            pl.segs = pl.segs.slice(i).map((sg) => ({ url: sg.url, dur: sg.dur, t: sg.t - this.startT }));
+        }
     }
 
     /** a playlist that grows (no ENDLIST): read it again, new segments added to the same list */
@@ -160,10 +183,10 @@ class HlsSource {
             const mi = parseMediaInfo(String(await this.get(pl.url)), pl.url);
             const have = new Set(pl.segs.map((x) => x.url));
             let t = pl.segs.length ? pl.segs[pl.segs.length - 1].t + pl.segs[pl.segs.length - 1].dur : 0;
-            for (const sg of mi.segs) if (!have.has(sg.url)) { pl.segs.push({ url: sg.url, dur: sg.dur, t }); t += sg.dur; }
+            for (const sg of mi.segs) if (!have.has(sg.url) && !this.dropped.has(sg.url)) { pl.segs.push({ url: sg.url, dur: sg.dur, t }); t += sg.dur; }
             pl.ended = mi.ended;
         }
     }
 }
 
-module.exports = { HlsSource, get, parseMaster, parseMedia, parseMediaInfo, pickVariant, stripId3 };
+module.exports = { HlsSource, get, hide, parseMaster, parseMedia, parseMediaInfo, pickVariant, stripId3 };

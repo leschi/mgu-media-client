@@ -6,7 +6,7 @@
  *
  * Picture: the app fetches the segments (./hls), takes the H.264 out (./tsdemux), decodes it
  * (./h264dec, Baseline) and sends frames to a cluster-render video layer (4:2:0 atlas). Sound: AAC -
- * the audio rendition's segments, or (a Media transcode) the sound in the same TS segments - appended to
+ * the audio rendition's segments, or (a server transcode) the sound in the same TS segments - appended to
  * one local file BMW's player plays (it plays local files only; it follows the file as it grows, and
  * near the end it saw it is opened again at its time). Worked on the car in a prior project 0.2.40 - 0.2.44.
  *
@@ -57,6 +57,9 @@ class ClusterVideo {
     /** where the video is, in seconds (for a server's "continue watching") */
     position() { return this.clock0 ? (Date.now() - this.clock0) / 1000 : 0; }
 
+    /** where it is in the whole video (a start position: the segment it started at, ./hls startAt) */
+    at() { return ((this.src && this.src.startT) || 0) + this.position(); }
+
     /** a playlist that grows (a live transcode): read again, every 2 s at most */
     _refresh() {
         if (this.refreshing || Date.now() - this.refreshT < 2000) return this.refreshing || Promise.resolve();
@@ -102,7 +105,7 @@ class ClusterVideo {
         this.running = true;
         try {
             this.dec = H264Decoder.load();
-            this.src = this.o.source || new HlsSource(this.o.url, { lookup: this.o.lookup, maxWidth: 1088, maxBps: this.quality === 'smooth' ? BUDGET_BPS : 0, get: this.o.get, anyProfile: this.o.anyProfile });
+            this.src = this.o.source || new HlsSource(this.o.url, { lookup: this.o.lookup, maxWidth: 1088, maxBps: this.quality === 'smooth' ? BUDGET_BPS : 0, get: this.o.get, anyProfile: this.o.anyProfile, startAt: this.o.startAt });
             this.state = 'loading the playlist';
             if (!this.src.video) await this.src.open();
             if (!this.running) return;
@@ -255,7 +258,7 @@ class ClusterVideo {
 
     /**
      * The sound: the audio rendition's segments (ID3 cut off), or the AAC in the video's own TS segments
-     * (a Media transcode), appended to one .aac file; the player starts once AUDIO_LEAD segments are in,
+     * (a server transcode), appended to one .aac file; the player starts once AUDIO_LEAD segments are in,
      * the rest follows ahead of the picture. Its state and time show on Diag.
      */
     async _audioStart() {

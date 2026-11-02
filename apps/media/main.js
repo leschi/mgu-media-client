@@ -1,10 +1,11 @@
 'use strict';
 /**
- * Media Client - videos and music from a Media Media Server on the BMW MGU (iDrive 7).
+ * Media Client - videos and music from a Jellyfin server on the BMW MGU (iDrive 7).
  *
- *   Server  sign in with a code at media.tv/link (no typing), or the server's URL and a token typed
- *           with the on-screen keyboard; the choice is kept in the app's data folder
- *   Browse  the libraries (movies, shows, music), on deck; the controller turns through the list,
+ *   Server  the server's address, then Quick Connect (a code entered in a signed-in Jellyfin app: no
+ *           password in the car) or user name and password, typed with the on-screen keyboard; the
+ *           access token (not the password) is kept in the app's data folder
+ *   Browse  the libraries (movies, shows, music), continue watching; the controller turns through the list,
  *           press opens / plays, tilt left goes back up
  *   Player  what plays: a video on the cluster (middle or whole) or the HUD - the picture ONLY while
  *           parked (./parkgate), the sound on through the car's speakers (BMW's media player) - or music
@@ -20,8 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const kbd = require('./keyboard');
-const qr = require('./qr');
-const { Media } = require('./media');
+const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
 const { MusicPlayer } = require('./musicplayer');
 const { lookup } = require('./dns');
@@ -51,10 +51,10 @@ mgu.run({
         const CONF = path.join(dataDir, 'media.json');
         let conf = {};
         try { conf = JSON.parse(fs.readFileSync(CONF, 'utf8')); } catch (e) { /* first start */ }
-        if (!conf.clientId) conf.clientId = 'mgu-media-' + crypto.randomBytes(8).toString('hex');
+        if (!conf.deviceId) conf.deviceId = 'mgu-media-' + crypto.randomBytes(8).toString('hex');
         const save = () => { try { fs.writeFileSync(CONF, JSON.stringify(conf), { mode: 0o600 }); } catch (e) { log.warn('save: ' + e.message); } };
         save();
-        const media = new Media({ clientId: conf.clientId, lookup, base: conf.base, token: conf.token });
+        const jf = new Jellyfin({ deviceId: conf.deviceId, lookup, base: conf.base, token: conf.token, userId: conf.userId });
 
         // what an earlier run left in /tmp (RAM on the unit): sound and track files of a player that was killed
         try { fs.readdirSync('/tmp').filter((f) => /^mgu-media-/.test(f)).forEach((f) => { try { fs.unlinkSync('/tmp/' + f); } catch (e) { /* not ours */ } }); } catch (e) { /* no /tmp here */ }
@@ -71,77 +71,97 @@ mgu.run({
         const touch = () => { rev++; };
         setInterval(touch, 1000);              // time-based content (states, the player's time)
 
-        let page = conf.token && conf.base ? 'browse' : 'server';
-        let status = conf.token && conf.base ? 'Server: ' + (conf.serverName || conf.base) : 'Not signed in';
+        const signedIn = () => !!(conf.token && conf.base && conf.userId);
+        let page = signedIn() ? 'browse' : 'server';
+        let status = signedIn() ? 'Server: ' + (conf.serverName || conf.base) + ', ' + (conf.userName || 'signed in') : 'Not signed in';
 
         /* ================= Server: sign in ================= */
-        let srvMode = 'idle';                  // idle | pin | pick | manual
-        let pin = null, pinTimer = null, servers = [], srvSel = 0;
-        const fields = { url: kbd.makeField(conf.base || 'http://', { max: 200 }), token: kbd.makeField(conf.token || '', { max: 100 }) };
+        let srvMode = 'idle';                  // idle | quick | form
+        let quick = null, quickTimer = null, busy = false;
+        const fields = { url: kbd.makeField(conf.base || 'http://', { max: 200 }), user: kbd.makeField(conf.userName || '', { max: 80 }), pw: kbd.makeField('', { mask: true, max: 120 }) };
+        const FIELDS = [['url', 'Server', 40, 700], ['user', 'User', 760, 380], ['pw', 'Password', 1160, 400]];
         let field = 'url';
         const keyboard = new kbd.Keyboard('abc');
         let keyRects = [];
 
-        async function signInCode() {
-            stopPin();
-            srvMode = 'pin'; pin = null; status = 'Asking media.tv for a code...'; touch();
+        /** the address as typed: http:// added, Jellyfin's port 8096 to a plain http address without one */
+        function address() {
+            let u = fields.url.value.trim().replace(/\/+$/, '');
+            if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+            if (/^http:/i.test(u) && !/^http:\/\/[^/]+:\d+/i.test(u)) u = u.replace(/^(http:\/\/[^/]+)/i, '$1:8096');
+            return u;
+        }
+
+        /** a Jellyfin server at the address? { name, version } */
+        async function server() {
+            if (fields.url.value.trim().replace(/^https?:\/\//i, '').length < 3) throw new Error('type the server address first');
+            jf.base = address();
+            status = 'Looking for Jellyfin at ' + jf.base + '...'; touch();
+            const i = await jf.info();
+            fields.url.value = jf.base; fields.url.caret = jf.base.length;
+            return i;
+        }
+
+        function signedInAs(r, info) {
+            conf.base = jf.base; conf.token = r.token; conf.userId = r.userId; conf.userName = r.userName || fields.user.value.trim(); conf.serverName = info.name; save();
+            fields.pw.value = ''; fields.pw.caret = 0;
+            status = 'Server: ' + info.name + ', ' + conf.userName;
+            srvMode = 'idle';
+            log.info('signed in to ' + info.name + ' (' + info.version + ') at ' + jf.base);
+            openRoot();
+            setPage('browse');
+        }
+
+        async function quickConnect() {
+            stopQuick();
+            if (busy) return;
+            busy = true;
             try {
-                pin = await media.pinStart();
-                status = 'Enter the code at media.tv/link';
+                const info = await server();
+                quick = await jf.quickStart();
+                srvMode = 'quick';
+                status = info.name + ': enter the code in your Jellyfin app';
                 const t0 = Date.now();
-                pinTimer = setInterval(async () => {
-                    if (Date.now() - t0 > 10 * 60000) { stopPin(); status = 'The code expired: sign in again'; srvMode = 'idle'; touch(); return; }
+                quickTimer = setInterval(async () => {
+                    if (Date.now() - t0 > 10 * 60000) { stopQuick(); status = 'The code expired: Quick Connect again'; srvMode = 'idle'; touch(); return; }
                     try {
-                        const token = await media.pinCheck(pin.id);
-                        if (!token) return;
-                        stopPin();
-                        media.token = token;
-                        status = 'Signed in - looking for your servers...'; touch();
-                        await findServers();
-                    } catch (e) { log.warn('code: ' + e.message); }
+                        if (!(await jf.quickCheck(quick.secret)) || !quickTimer) return;
+                        stopQuick();
+                        signedInAs(await jf.quickFinish(quick.secret), info);
+                    } catch (e) { log.warn('quick connect: ' + e.message); }
                 }, 3000);
-            } catch (e) { status = 'media.tv: ' + e.message; srvMode = 'idle'; }
+            } catch (e) {
+                status = 'Quick Connect: ' + e.message;
+                if (/address/.test(e.message)) { srvMode = 'form'; field = 'url'; }
+            }
+            busy = false;
+            buttons(); touch();
+        }
+        function stopQuick() { clearInterval(quickTimer); quickTimer = null; }
+
+        async function signInPassword() {
+            if (busy) return;
+            busy = true;
+            try {
+                const info = await server();
+                if (!fields.user.value.trim()) { field = 'user'; throw new Error('type your user name'); }
+                status = 'Signing in as ' + fields.user.value.trim() + '...'; touch();
+                signedInAs(await jf.signIn(fields.user.value.trim(), fields.pw.value), info);
+            } catch (e) { status = 'Sign in: ' + e.message; }
+            busy = false;
             touch();
-        }
-        function stopPin() { clearInterval(pinTimer); pinTimer = null; }
-
-        async function findServers() {
-            try {
-                servers = await media.servers();
-                if (!servers.length) { status = 'No server on this account'; srvMode = 'idle'; touch(); return; }
-                if (servers.length === 1) return useServer(servers[0]);
-                srvMode = 'pick'; srvSel = 0; status = 'Choose a server'; touch();
-            } catch (e) { status = 'Servers: ' + e.message; srvMode = 'idle'; touch(); }
-            return undefined;
-        }
-
-        async function useServer(s) {
-            status = 'Connecting to ' + s.name + '...'; touch();
-            try {
-                const c = await media.connect(s);
-                conf.base = media.base; conf.token = media.token; conf.serverName = s.name; save();
-                status = 'Server: ' + s.name + ' (' + (c.local ? 'home network' : c.relay ? 'Media relay' : 'internet') + ')';
-                srvMode = 'idle';
-                log.info('server ' + s.name + ' at ' + c.uri);
-                openRoot();
-                setPage('browse');
-            } catch (e) { status = s.name + ': ' + e.message; touch(); }
-        }
-
-        async function useManual() {
-            media.base = fields.url.value.replace(/\/+$/, ''); media.token = fields.token.value.trim();
-            status = 'Checking ' + media.base + '...'; touch();
-            try {
-                await media.check();
-                conf.base = media.base; conf.token = media.token; conf.serverName = media.base; save();
-                status = 'Server: ' + media.base; srvMode = 'idle';
-                openRoot(); setPage('browse');
-            } catch (e) { status = 'That server: ' + e.message; touch(); }
         }
 
         function keyPress(id) {
             const r = keyboard.apply(id, fields[field]);
-            if (r.action === 'enter') { if (field === 'url') field = 'token'; else useManual(); }
+            if (r.action === 'enter') {
+                if (field === 'url') {
+                    field = 'user';
+                    server().then((i) => { status = 'Found ' + i.name + ' (Jellyfin ' + i.version + '): Quick Connect, or user and password'; touch(); },
+                        (e) => { status = 'Server: ' + e.message; field = 'url'; touch(); });
+                } else if (field === 'user') field = 'pw';
+                else signInPassword();
+            }
             touch();
         }
 
@@ -151,8 +171,9 @@ mgu.run({
         async function open(title, p) {
             loading = title; touch();
             try {
-                const items = p === '#root' ? (await media.sections()).concat([{ key: '/library/onDeck', title: 'On deck', sub: 'continue watching', type: 'section', leaf: false }])
-                    : await media.items(p);
+                // (a list is opened by its item; the libraries by '#root')
+                const items = p === '#root' ? [{ id: '#resume', title: 'Continue watching', sub: '', type: 'resume', leaf: false }].concat(await jf.views())
+                    : p.id === '#resume' ? await jf.resume() : await jf.children(p);
                 stack.push({ title, path: p, items, sel: 0, top: 0 });
             } catch (e) { status = title + ': ' + e.message; log.warn(status); }
             loading = ''; touch();
@@ -172,24 +193,24 @@ mgu.run({
             const c = cur();
             const it = c && c.items[c.sel];
             if (!it) return;
-            if (!it.leaf) return open(it.title, it.key);
-            if (it.type === 'track') return playMusic(c.items, c.sel);
+            if (!it.leaf) return open(it.title, it);
+            if (it.audio) return playMusic(c.items, c.sel);
             return playVideo(it);
         }
 
         /* ================= Player ================= */
         let video = null, music = null, playing = null;     // playing: the item
-        let session = null, offset = 0, pingT = null, timelineT = null;
+        let pb = null, progressT = null;                    // pb: the play session { id, mediaSourceId, playSessionId }
+        const where = () => (video ? video.at() : 0);
 
         async function stopAll() {
-            clearInterval(pingT); clearInterval(timelineT); pingT = timelineT = null;
-            const v = video, m = music, it = playing, s = session, off = offset;
-            video = null; music = null; session = null;
+            clearInterval(progressT); progressT = null;
+            const v = video, m = music, p = pb;
+            video = null; music = null; pb = null;
             const done = [];
             if (v) {
-                if (it) media.timeline({ ratingKey: it.ratingKey, state: 'stopped', timeMs: (off + v.position()) * 1000, durationMs: it.duration });
+                if (p) { jf.report('stop', Object.assign({ timeMs: v.at() * 1000 }, p)); jf.stopTranscode(p.playSessionId); }
                 done.push(v.stop());
-                if (s) media.stop(s);
             }
             if (m) done.push(m.stop());
             await Promise.all(done);
@@ -200,26 +221,30 @@ mgu.run({
             await stopAll();
             playing = it;
             const resume = settings.get('resume') !== false && it.offset > 30000 && it.offset < it.duration - 60000;
-            offset = at != null ? at : resume ? it.offset / 1000 : 0;
-            session = crypto.randomBytes(8).toString('hex');
+            const from = at != null ? at : resume ? it.offset / 1000 : 0;
             const sharp = settings.get('quality') === 'sharp';
-            const url = media.transcodeUrl(it.ratingKey, { session, offset, resolution: sharp ? '640x360' : '480x270', bitrate: sharp ? 2000 : 1200 });
-            video = new ClusterVideo({ url, target: settings.get('target') || 'map', gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
-            log.info('video ' + it.title + ' from ' + Math.round(offset) + ' s on ' + (settings.get('target') || 'map'));
+            status = 'Asking the server for ' + it.title + '...'; setPage('player');
+            let info;
+            try { info = await jf.playbackInfo(it.id); } catch (e) { status = it.title + ': ' + e.message; log.warn(status); touch(); return; }
+            if (playing !== it || video || music) return;          // (something else was chosen meanwhile)
+            const p = { id: it.id, mediaSourceId: info.mediaSourceId, playSessionId: info.playSessionId || crypto.randomBytes(8).toString('hex') };
+            pb = p;
+            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 2000000 : 1200000 }, p));
+            video = new ClusterVideo({ url, startAt: from, target: settings.get('target') || 'map', gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
-            const s = session;
-            pingT = setInterval(() => media.ping(s), 10000);
-            timelineT = setInterval(() => { if (video && playing) media.timeline({ ratingKey: it.ratingKey, state: 'playing', timeMs: (offset + video.position()) * 1000, durationMs: it.duration }); }, 10000);
-            setPage('player');
+            jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
+            progressT = setInterval(() => { if (video && pb === p) jf.report('progress', Object.assign({ timeMs: video.at() * 1000 }, p)); }, 10000);
+            touch();
         }
 
         async function playMusic(items, i) {
             await stopAll();
-            const tracks = items.filter((x) => x.type === 'track');
+            const tracks = items.filter((x) => x.audio);
             const start = tracks.indexOf(items[i]);
             playing = items[i];
             if (!sig || !sig.hasNative()) { status = 'No sound here (BMW\'s player is on the unit only)'; setPage('player'); return; }
-            music = new MusicPlayer({ media, sig, lookup, log });
+            music = new MusicPlayer({ server: jf, sig, lookup, log });
             music.play(tracks, Math.max(0, start)).catch((e) => log.warn('music: ' + e.message));
             setPage('player');
         }
@@ -228,19 +253,18 @@ mgu.run({
         settings.onChange((k) => {
             if (k === 'signOut' && settings.get('signOut')) {
                 try { settings.set('signOut', false); } catch (e) { /* stays */ }
-                stopAll(); conf.base = ''; conf.token = ''; conf.serverName = ''; save();
-                media.base = ''; media.token = ''; stack = []; status = 'Signed out'; setPage('server');
+                stopAll(); conf.token = ''; conf.userId = ''; save();          // (the address stays: signing in again is shorter)
+                jf.token = ''; jf.userId = ''; stack = []; status = 'Signed out'; setPage('server');
             }
-            if ((k === 'target' || k === 'quality') && video && playing && playing.type !== 'track') {
-                const at = offset + video.position();
-                playVideo(playing, at);
+            if ((k === 'target' || k === 'quality') && video && playing && !playing.audio) {
+                playVideo(playing, where());
             }
             touch();
         });
 
         /* ================= pages, buttons, input ================= */
         const BTN = {
-            server: () => [['BTN1', srvMode === 'pin' ? 'New code' : 'Sign in (code)'], ['BTN2', srvMode === 'manual' ? 'Connect' : 'Enter by hand']],
+            server: () => [['BTN1', srvMode === 'quick' ? 'New code' : 'Quick Connect'], ['BTN2', srvMode === 'form' ? 'Sign in' : 'Enter by hand']],
             browse: () => [['BTN1', 'Open / Play'], ['BTN2', 'Back']],
             player: () => [['BTN1', 'Stop'], ['BTN2', music ? 'Next track' : 'Restart']],
             diag: () => [['BTN1', 'Clear log'], ['BTN2', 'Back to browse']],
@@ -251,14 +275,14 @@ mgu.run({
         if (page === 'browse') openRoot();
 
         ui.onClick('BTN1', () => {
-            if (page === 'server') signInCode();
+            if (page === 'server') quickConnect();
             else if (page === 'browse') choose();
             else if (page === 'player') { stopAll(); playing = null; }
             else if (page === 'diag') ring.length = 0;
             buttons(); touch();
         });
         ui.onClick('BTN2', () => {
-            if (page === 'server') { if (srvMode === 'manual') useManual(); else { stopPin(); srvMode = 'manual'; field = 'url'; status = 'Type the server address (http://IP:32400) and a token'; } }
+            if (page === 'server') { if (srvMode === 'form') signInPassword(); else { stopQuick(); srvMode = 'form'; field = conf.base ? 'user' : 'url'; status = 'Server address (http://IP:8096), then Quick Connect - or user and password'; } }
             else if (page === 'browse') back();
             else if (page === 'player') { if (music) music.next(); else if (playing) playVideo(playing, 0); }
             else if (page === 'diag') setPage('browse');
@@ -273,11 +297,9 @@ mgu.run({
                 if (!c) return;
                 const i = c.top + Math.floor((y - LIST_Y) / ROW_H);
                 if (y >= LIST_Y && i >= 0 && i < c.items.length && i < c.top + ROWS) { if (c.sel === i) choose(); else { c.sel = i; touch(); } }
-            } else if (page === 'server' && srvMode === 'pick') {
-                const i = Math.floor((y - 150) / ROW_H);
-                if (i >= 0 && i < servers.length) useServer(servers[i]);
-            } else if (page === 'server' && srvMode === 'manual') {
-                if (y >= 96 && y < 140) field = x < W / 2 ? 'url' : 'token';
+            } else if (page === 'server' && srvMode === 'form') {
+                const f = FIELDS.find((d) => x >= d[2] && x < d[2] + d[3]);
+                if (y >= 96 && y < 140 && f) field = f[0];
                 const k = keyRects.find((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
                 if (k) keyPress(k.id);
                 touch();
@@ -291,21 +313,18 @@ mgu.run({
                     if (how === 'turn') moveSel(step);
                     else if (dir === 'up' || dir === 'down') moveSel(dir === 'up' ? -1 : 1);
                     else if (dir === 'left') back(); else if (dir === 'right') choose();
-                } else if (page === 'server' && srvMode === 'manual') {
+                } else if (page === 'server' && srvMode === 'form') {
                     if (how === 'turn') keyboard.move(step > 0 ? 'right' : 'left'); else keyboard.move(dir);
                     touch();
-                } else if (page === 'server' && srvMode === 'pick') {
-                    srvSel = Math.max(0, Math.min(servers.length - 1, srvSel + (how === 'turn' ? step : dir === 'up' ? -1 : dir === 'down' ? 1 : 0))); touch();
                 } else if (page === 'player' && music) {
                     if (how === 'turn' || dir === 'left' || dir === 'right') { if (step > 0 || dir === 'right') music.next(); else music.prev(); touch(); }
                 }
             },
             press() {
                 if (page === 'browse') choose();
-                else if (page === 'server' && srvMode === 'manual') keyPress(keyboard.current());
-                else if (page === 'server' && srvMode === 'pick' && servers[srvSel]) useServer(servers[srvSel]);
+                else if (page === 'server' && srvMode === 'form') keyPress(keyboard.current());
             },
-        }, () => page === 'browse' || (page === 'server' && (srvMode === 'manual' || srvMode === 'pick')) || (page === 'player' && !!music));
+        }, () => page === 'browse' || (page === 'server' && srvMode === 'form') || (page === 'player' && !!music));
 
         /* ================= drawing ================= */
         const lit = { literal: true };
@@ -313,30 +332,25 @@ mgu.run({
         function lines(cv, t, L, y, size, max) { L.slice(0, max || 20).forEach((l, i) => cv.text(String(l).slice(0, 150), 40, y + i * (size + 8), size, i === 0 ? t.text : t.dim, lit)); }
 
         function drawServer(cv, t) {
-            header(cv, t, 'Media server');
+            header(cv, t, 'Jellyfin server');
             // (with the keyboard the fields take that line: the status goes up to the right)
-            if (srvMode === 'manual') cv.text(status, W - 40, 74, 20, t.accent, { align: 'right', literal: true });
+            if (srvMode === 'form') cv.text(status, W - 40, 74, 20, t.accent, { align: 'right', literal: true });
             else cv.text(status, 40, 116, 22, t.accent, lit);
-            if (srvMode === 'pin' && pin) {
-                cv.text('1. On your phone open  media.tv/link  (or scan the code)', 40, 170, 24, t.text, lit);
-                cv.text('2. Enter this code:', 40, 214, 24, t.text, lit);
-                cv.text(pin.code, 40, 320, 96, t.text, { font: 'bold', spacing: 12, literal: true });
-                drawQr(cv, t, 'https://media.tv/link', W - 340, 70, 300);
-            } else if (srvMode === 'pick') {
-                servers.forEach((s, i) => {
-                    const y = 150 + i * ROW_H;
-                    if (i === srvSel) cv.fillRect(30, y, 1000, ROW_H - 4, withAlpha(t.sel || t.accent, 0.25));
-                    cv.text(s.name + (s.owned ? '' : '  (shared)'), 50, y + 34, 24, t.text, lit);
-                });
-            } else if (srvMode === 'manual') {
-                [['url', 'Server', 40], ['token', 'Token', W / 2]].forEach(([k, label, x]) => {
-                    cv.fillRect(x, 96, W / 2 - 60, 44, withAlpha(field === k ? (t.sel || t.accent) : '#ffffff', field === k ? 0.25 : 0.06));
-                    cv.text(label + ': ' + kbd.display(fields[k]) + (field === k ? '_' : ''), x + 10, 126, 22, t.text, lit);
+            if (srvMode === 'quick' && quick) {
+                cv.text('1. On your phone open the Jellyfin app (or the web page), signed in', 40, 170, 24, t.text, lit);
+                cv.text('2. Your profile -> Quick Connect, enter this code:', 40, 214, 24, t.text, lit);
+                cv.text(quick.code, 40, 330, 104, t.text, { font: 'bold', spacing: 14, literal: true });
+                cv.text('The car signs in by itself once the code is entered (no password here).', 40, 400, 20, t.dim, lit);
+            } else if (srvMode === 'form') {
+                FIELDS.forEach(([k, label, x, w]) => {
+                    cv.fillRect(x, 96, w - 20, 44, withAlpha(field === k ? (t.sel || t.accent) : '#ffffff', field === k ? 0.25 : 0.06));
+                    cv.text(label + ': ' + kbd.display(fields[k]).slice(-(k === 'url' ? 44 : 22)) + (field === k ? '_' : ''), x + 10, 126, 22, t.text, lit);
                 });
                 drawKeyboard(cv, t, 160);
             } else {
-                lines(cv, t, ['Sign in (code): no typing - you enter a code at media.tv/link on your phone.',
-                    'Enter by hand: the server\'s address (http://192.168.x.x:32400) and a Media token.',
+                lines(cv, t, ['Enter by hand: the server\'s address (http://192.168.x.x:8096 or your https address).',
+                    'Then Quick Connect: a code you enter in your Jellyfin app (profile -> Quick Connect) - no password here.',
+                    'Or type user name and password: only the server\'s access token is kept, not the password.',
                     'Then: Browse your libraries. A video plays on the cluster or the HUD (Settings -> Video on),',
                     'the picture only while parked (under 1 km/h, selector in P); the sound also while driving.'], 170, 22);
             }
@@ -345,7 +359,7 @@ mgu.run({
         function drawKeyboard(cv, t, y0) {
             keyRects = [];
             const rows = keyboard.rows(), kh = 76, gap = 6;
-            const label = { '#shift': keyboard.layer === 'ABC' ? 'abc' : 'ABC', '#layer': keyboard.layer === '123' ? 'abc' : '123', '#back': 'Del', '#space': 'Space', '#enter': field === 'url' ? 'Next' : 'Connect' };
+            const label = { '#shift': keyboard.layer === 'ABC' ? 'abc' : 'ABC', '#layer': keyboard.layer === '123' ? 'abc' : '123', '#back': 'Del', '#space': 'Space', '#enter': field === 'pw' ? 'Sign in' : 'Next' };
             rows.forEach((row, r) => {
                 const wide = (id) => (id === '#space' ? 4 : id[0] === '#' ? 1.6 : 1);
                 const units = row.reduce((a, id) => a + wide(id), 0), kw = Math.min(118, (W - 80) / units);
@@ -360,19 +374,11 @@ mgu.run({
             });
         }
 
-        let qrCache = null;
-        function drawQr(cv, t, text, x, y, size) {
-            if (!qrCache || qrCache.text !== text) { try { qrCache = { text, m: qr.build(text, 'M') }; } catch (e) { return; } }
-            const m = qrCache.m, n = m.length, q = Math.floor(size / (n + 8)), off = Math.floor((size - n * q) / 2);
-            cv.fillRect(x, y, size, size, '#ffffff');
-            for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (m[r][c]) cv.fillRect(x + off + c * q, y + off + r * q, q, q, '#000000');
-        }
-
         function drawBrowse(cv, t) {
             const c = cur();
             header(cv, t, stack.map((s) => s.title).join('  >  ') || 'Libraries');
             if (loading) cv.text('Loading ' + loading + '...', W - 40, 74, 20, t.dim, { align: 'right', literal: true });
-            if (!c) { cv.text(conf.token ? status : 'Sign in first (Server)', 40, 130, 22, t.dim, lit); return; }
+            if (!c) { cv.text(signedIn() ? status : 'Sign in first (Server)', 40, 130, 22, t.dim, lit); return; }
             if (!c.items.length) { cv.text('(empty)', 40, 130, 22, t.dim, lit); return; }
             for (let k = 0; k < ROWS; k++) {
                 const i = c.top + k, it = c.items[i];
@@ -392,7 +398,7 @@ mgu.run({
             if (video) {
                 const parked = gate.parked();
                 cv.text('Video on: ' + TARGET_NAME[video.target] + (parked ? '' : '  -  picture paused: not parked (the sound goes on)'), 40, 116, 22, parked ? t.accent : t.warn, lit);
-                cv.text('Position ' + fmt(offset + video.position()) + (playing.duration ? ' / ' + fmt(playing.duration / 1000) : ''), 40, 150, 22, t.text, lit);
+                cv.text('Position ' + fmt(where()) + (playing.duration ? ' / ' + fmt(playing.duration / 1000) : ''), 40, 150, 22, t.text, lit);
                 lines(cv, t, video.lines().slice(0, 9), 190, 18);
             } else if (music) {
                 lines(cv, t, music.lines(), 116, 22);
@@ -404,7 +410,7 @@ mgu.run({
 
         function drawDiag(cv, t) {
             header(cv, t, 'Diagnostics  -  ' + ctx.spec.title + ' ' + ctx.spec.version);
-            const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (conf.token ? 'yes' : 'no') + ', park check: ' + gate.why()]
+            const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why()]
                 .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-12));
             lines(cv, t, L, 110, 17, 22);
         }
