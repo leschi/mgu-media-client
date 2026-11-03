@@ -78,10 +78,10 @@ mgu.run({
 
         let sig = null;
         try { sig = require('./kit/signals'); } catch (e) { /* not on a unit */ }
-        let parkGate = null;
-        try { parkGate = require('./parkgate').watchPark(ctx.signals, log); } catch (e) { log.warn('park check: ' + e.message); }
-        // no park check (no vehicle signals): never parked - the picture never shows without one
-        const gate = parkGate || { parked: () => false, why: () => 'no vehicle signals' };
+        // the park check (./parkgate): true only when parked; false when driving, not known, or not started
+        const park = require('./parkgate');
+        park.start(ctx.signals, log);
+        const gate = { parked: park.isParked, why: park.why };
 
         /* ---------------- redraw only on change ---------------- */
         let rev = 1, drawn = -1, drawErr = '';

@@ -21,6 +21,7 @@ const { demuxTsAll } = require('./tsdemux');
 const { SegmentBuffer } = require('./buffer');
 const { ShmVideo } = require('./shmvideo');
 const { H264Decoder, i420ToAtlas } = require('./h264dec');
+const parkgate = require('./parkgate');
 
 const TICK_MS = 15;
 const SLICE_MS = 25;                    // decode at most this long per tick (node stays free for the UI)
@@ -261,9 +262,10 @@ class ClusterVideo {
         if (!this.running || !this.src) return;
         // (the buffer follows the clock - the sound's - also while the picture is off)
         if (this.buf && this.clock0) this.buf.setPos(this._segAt(this.position()));
-        const parked = !this.o.gate || this.o.gate.parked();
+        // (no gate given: ./parkgate's own, false until started; anything but true is not parked)
+        const parked = (this.o.gate ? this.o.gate.parked() : parkgate.isParked()) === true;
         if (!parked) {
-            if (this.showing || this.state !== 'paused: not parked (the sound goes on)') { this._visible(false); this.queue = []; this.next = null; this.state = 'paused: not parked (the sound goes on)'; this._event('picture off: ' + (this.o.gate ? this.o.gate.why() : '')); }
+            if (this.showing || this.state !== 'paused: not parked (the sound goes on)') { this._visible(false); this.queue = []; this.next = null; this.state = 'paused: not parked (the sound goes on)'; this._event('picture off: ' + (this.o.gate ? this.o.gate.why() : parkgate.why())); }
             return;
         }
         // the clock starts with the sound (up to 15 s for it), else with the first segment
