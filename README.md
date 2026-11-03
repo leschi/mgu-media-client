@@ -74,7 +74,7 @@ The tests also run on Node 8.16, the version on the car. `test/fixtures` holds s
 
 As for waze-on-cluster: the middle is the app's only while the cluster's **Central display area** is set to **Map view** (or Off): Instrument cluster settings. In other views BMW's content keeps it, and the Player page says so. The app keeps one layer for the whole video and hides it when not parked (not dropped and made again), and the layer stays wanted for 30 s without a frame, so a slow segment does not give the middle back to BMW's map.
 
-## Known limits (0.4.4)
+## Known limits (0.4.5)
 
 - **H.264 profile:** If the server sends H.264 Main or High despite the Baseline request, the picture stays empty. Diag then names the profile.
 - **Sound:** BMW's player keeps the length a file had when it opened it, so the sound goes on in a fresh file now and then (a short gap): with the disk buffer every few minutes, with the 15-second buffer about every 10 seconds.

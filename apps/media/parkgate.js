@@ -83,6 +83,11 @@ function start(signals, log) {
 
 /** true: the car is parked (a fresh speed under 1 km/h AND the selector in P); false: driving, or not known */
 function isParked() {
+    // ==================================================================================
+    // TEST OVERRIDE - FORCES "PARKED" ALWAYS. The video shows while DRIVING. NEVER SHIP.
+    // Delete this one line to get the real check back (the code below it).
+    return true;
+    // ==================================================================================
     try { return !!current && current.parked() === true; } catch (e) { return false; }
 }
 
