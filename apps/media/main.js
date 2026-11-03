@@ -31,6 +31,7 @@ const { ClusterVideo } = require('./clustervideo');
 const { ClusterRender } = require('./cluster_render_client');
 const { MusicPlayer } = require('./musicplayer');
 const { Remote } = require('./remote');
+const { RemoteLog } = require('./remotelog');
 const { lookup, resolved: dnsResolved } = require('./dns');
 
 const W = 1600, H = 520;
@@ -90,7 +91,26 @@ mgu.run({
         const rssMB = () => Math.round(process.memoryUsage().rss / 1048576);
         let rss = rssMB(), peakRss = rss, rss0 = rss;
         setInterval(() => { rss = rssMB(); if (rss > peakRss) peakRss = rss; }, 10000);
-        setInterval(() => log.info('memory: ' + rssMB() + ' MB (peak ' + peakRss + ', start ' + rss0 + ')' + (video ? ', video on ' + video.target : music ? ', music' : '')), 120000);
+
+        // the online diagnostics log (./remotelog): this car's data in a jsonbin.io bin, read on a PC
+        // (so a crash that restarts the app leaves a trace off the car). OFF unless apps/media/remotelog-
+        // config.js holds a key (git-ignored; see remotelog-config.sample.js). Few requests: on start
+        // (carrying the reason the last run ended) and a memory line every 2 min; capped in the config.
+        let REMOTE_CFG = {};
+        try { REMOTE_CFG = require('./remotelog-config'); } catch (e) { /* no online log */ }
+        const online = new RemoteLog({ log, dataDir, config: REMOTE_CFG, vin: carVin });
+        function onlineDoc() {
+            return { version: (ctx.spec && ctx.spec.version) || '?', lastExit: lastExit || null,
+                memory: { rss: rssMB(), peak: peakRss, start: rss0 },
+                page, signedIn: signedIn(), server: conf.base || null, park: gate.why(), cast: remote.line(),
+                playing: playing ? { title: playing.title, sub: playing.sub, durationMs: playing.duration } : null,
+                video: video ? video.lines() : [], music: music ? music.lines() : [], log: ring.slice(-120) };
+        }
+        if (online.enabled) { log.info('online log on (jsonbin)'); setTimeout(() => online.update(onlineDoc, 'start' + (lastExit ? ': last run ' + lastExit.replace(/^\S+ /, '') : ''), true), 20000); }
+        setInterval(() => {
+            log.info('memory: ' + rssMB() + ' MB (peak ' + peakRss + ', start ' + rss0 + ')' + (video ? ', video on ' + video.target : music ? ', music' : ''));
+            if (online.enabled) online.update(onlineDoc, 'memory');
+        }, 120000);
 
         let sig = null;
         try { sig = require('./kit/signals'); } catch (e) { /* not on a unit */ }
@@ -713,7 +733,7 @@ mgu.run({
             const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why(),
                 'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-'), remote.line(),
                 'memory: ' + rssMB() + ' MB (peak ' + peakRss + ', start ' + rss0 + ')' + (lastExit ? '   -   last run ended: ' + lastExit.replace(/^\S+ /, '') : '')]
-                .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-11));
+                .concat(online.enabled ? online.statusLines().slice(0, 3) : [], video ? video.lines().slice(0, 5) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-9));
             lines(cv, t, L, 110, 17, 22);
         }
 
@@ -747,6 +767,20 @@ mgu.run({
         log.info('Media Client ' + ctx.spec.version + ' started' + (conf.base ? ', server ' + conf.base : ''));
     },
 });
+
+/** the car's VIN from BMW's SDK (getVin: a value, a promise or a callback - whichever it is), or null */
+function carVin() {
+    let g;
+    try { g = require('oap-sdk').getVin; } catch (e) { return Promise.resolve(null); }
+    if (typeof g !== 'function') return Promise.resolve(null);
+    const pick = (v) => (v && typeof v === 'object' ? v.vin || v.VIN || v.value || null : v) || null;
+    return new Promise((resolve) => {
+        let r;
+        try { r = g((err, v) => resolve(pick(typeof err === 'string' ? err : v))); } catch (e) { resolve(null); return; }
+        if (r && typeof r.then === 'function') r.then((v) => resolve(pick(v)), () => resolve(null));
+        else if (r) resolve(pick(r));
+    });
+}
 
 // FrontCCU rotary encoder -> move/press (as a prior project: the knob counts by position, tilt / push on a change)
 function wireController(ctx, handlers, active) {

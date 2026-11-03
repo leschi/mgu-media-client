@@ -74,7 +74,7 @@ The tests also run on Node 8.16, the version on the car. `test/fixtures` holds s
 
 As for waze-on-cluster: the middle is the app's only while the cluster's **Central display area** is set to **Map view** (or Off): Instrument cluster settings. In other views BMW's content keeps it, and the Player page says so. The app keeps one layer for the whole video and hides it when not parked (not dropped and made again), and the layer stays wanted for 30 s without a frame, so a slow segment does not give the middle back to BMW's map.
 
-## Known limits (0.4.3)
+## Known limits (0.4.4)
 
 - **H.264 profile:** If the server sends H.264 Main or High despite the Baseline request, the picture stays empty. Diag then names the profile.
 - **Sound:** BMW's player keeps the length a file had when it opened it, so the sound goes on in a fresh file now and then (a short gap): with the disk buffer every few minutes, with the 15-second buffer about every 10 seconds.
@@ -83,3 +83,10 @@ As for waze-on-cluster: the middle is the app's only while the cluster's **Centr
   - Subtitles.
 
 **Diagnostics:** the kit writes the reason the app last ended to `data/<id>.log` (a `FATAL` line with the stack on a crash, the memory in use at exit). Diag shows that last reason and the current memory (with the peak), and the log notes the memory every two minutes, so a steady climb (an out-of-memory restart) is visible.
+
+**Online diagnostics log (optional, off by default).** For testing on the car, the app can send its diagnostics (version, the reason the last run ended, memory, state, recent log) to a [jsonbin.io](https://jsonbin.io) bin per car, so they can be read from a PC without photographing the screen (`remotelog.js`). It is **off unless** `apps/media/remotelog-config.js` holds a key:
+
+1. Copy `apps/media/remotelog-config.sample.js` to `apps/media/remotelog-config.js` and fill in a jsonbin access key and a directory bin.
+2. Read what the cars sent: `node tools/remotelog-read.js` (the directory), or `node tools/remotelog-read.js <VIN>` (that car's latest).
+
+`remotelog-config.js` is git-ignored. **Do not commit a key to this public repository** — anyone could then read the car's VIN and log, or use up the key's requests. Use only a disposable test key with a low cap, and revoke it when testing ends. Requests are few (on start, carrying the last run's end reason, and a memory line every two minutes) and capped in the config.

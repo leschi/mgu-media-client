@@ -9,3 +9,8 @@ x_call/
 # per-car data (profiles, saved passwords) if ever generated locally
 apps/media/data/
 
+
+# the online log's key (never commit the real key to this public repo)
+apps/media/remotelog-config.js
+apps/media/remotelog-state.json
+tools/.remotelog-cache.json

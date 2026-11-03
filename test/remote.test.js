@@ -165,3 +165,29 @@ test('MusicPlayer: elapsed follows the player\'s time, seek sets it, add puts tr
     m.add([{ id: 'l', audio: true }]);
     assert.deepStrictEqual(m.tracks.map((x) => x.id), ['a', 'n', 'b', 'l']);
 });
+
+test('RemoteLog: off without a key; with one it makes the car bin then PUTs the doc (app mgu-media)', async () => {
+    const { RemoteLog } = require('../apps/media/remotelog');
+    const off = new RemoteLog({ config: {} });
+    assert.strictEqual(off.enabled, false);
+    off.update(() => ({ x: 1 }), 'noop');                 // a no-op: nothing thrown, nothing sent
+    assert.ok(/off/.test(off.statusLines()[0]));
+
+    const calls = [];
+    const r = new RemoteLog({ config: { accessKey: 'k', directoryBin: 'DIR', maxRequests: 100, spacingMs: 0, nowGapMs: 0 }, vin: () => Promise.resolve('WBATEST0001') });
+    r._send = (method, p, body) => {
+        calls.push(method + ' ' + p.replace(/\/latest$/, '/latest'));
+        if (method === 'POST' && p === '/v3/b') return Promise.resolve({ status: 200, body: { metadata: { id: 'BIN1' } } });
+        if (method === 'GET') return Promise.resolve({ status: 200, body: {} });
+        r.put = JSON.parse(typeof body === 'string' ? body : JSON.stringify(body));
+        return Promise.resolve({ status: 200, body: {} });
+    };
+    r.update(() => ({ memory: { rss: 42 } }), 'start', true);
+    await wait(60);
+    assert.ok(calls.indexOf('POST /v3/b') === 0, calls.join(', '));         // the bin made first
+    assert.ok(calls.some((c) => c === 'PUT /v3/b/BIN1'), calls.join(', ')); // then the doc
+    assert.strictEqual(r.put.app, 'mgu-media');
+    assert.strictEqual(r.put.vin, 'WBATEST0001');
+    assert.strictEqual(r.put.memory.rss, 42);
+    assert.strictEqual(r.put.why, 'start');
+});
