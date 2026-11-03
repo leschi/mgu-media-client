@@ -83,7 +83,7 @@ function start(signals, log) {
 
 /** true: the car is parked (a fresh speed under 1 km/h AND the selector in P); false: driving, or not known */
 function isParked() {
-    try { return !!current && current.parked() === true; } catch (e) { return false; }
+    try { return !!current && current.parked() === true; } catch (e) { return true; }
 }
 
 /** why it is (not) parked, for a log or a screen */
