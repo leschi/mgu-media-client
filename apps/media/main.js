@@ -410,7 +410,7 @@ mgu.run({
         /** to sec into what plays: a video starts again there (the server transcodes from that segment) */
         function seekTo(sec) {
             sec = Math.max(0, sec);
-            if (video && playing) playVideo(playing, sec, vq);
+            if (video && playing) { log.info('seek to ' + Math.round(sec) + ' s (restart the transcode there)'); playVideo(playing, sec, vq); }
             else if (music) { music.seek(sec * 1000); musicReport(music); }
         }
         const position = () => (video ? video.at() : music ? music.elapsed() / 1000 : 0);
@@ -696,7 +696,9 @@ mgu.run({
             const say = (str, y, size, col) => cv.text(String(str).slice(0, chars), x, y, size, col, lit);
             if (video) {
                 const parked = gate.parked();
-                const st = video.paused ? 'Paused' : !parked ? 'Picture only while parked (P) - the sound goes on' : STATE_TEXT(video.state);
+                const loadingNow = parked && !video.paused && /^(starting|loading|buffering)/.test(video.state);
+                const st = video.paused ? 'Paused' : !parked ? 'Picture only while parked (P) - the sound goes on'
+                    : loadingNow ? 'Loading - ' + video.loadReason() : STATE_TEXT(video.state);
                 say(st, 120, 24, !parked || /^Error/.test(st) ? (t.warn || t.accent) : t.text);
                 say('Video on: ' + TARGET_NAME[video.target], 156, 20, t.dim);
                 // where it is

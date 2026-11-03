@@ -118,6 +118,22 @@ class ClusterVideo {
             ' Central display area to Map view (or Off), as Waze needs; or choose Whole cluster / HUD' : '';
     }
 
+    /**
+     * A short why while still loading (shown on the Player page, so a stall is not a mute "Loading..."):
+     * names the real block - the playlist, no segment from the server yet, a segment that 404s, or the
+     * sound the picture waits on. Most seek / resume hangs are the server not delivering the seeked
+     * segment, which this makes visible.
+     */
+    loadReason() {
+        const v = this.src && this.src.video;
+        if (!v) return 'asking the server for the playlist';
+        if (!v.segs.length) return 'no video segment from the server yet';
+        const last = (this.events[this.events.length - 1] || '').replace(/^\d\d:\d\d:\d\d /, '');
+        if (/segment|playlist|sound|error/i.test(last)) return last;
+        if (!this.clock0) return 'waiting for the sound (' + this.audio.state + ')';
+        return this.state + ', ' + v.segs.length + ' segments';
+    }
+
     /** Diag lines */
     lines() {
         const s = this.stats, v = this.src && this.src.video;
