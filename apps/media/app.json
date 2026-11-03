@@ -2,7 +2,7 @@
   "id": "media",
   "title": "Media Client",
   "description": "Videos and music from your Jellyfin server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Enter the server's address, then sign in with Quick Connect (a code in your Jellyfin app) or user name and password.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "vendor": "custom",
   "loggingId": "OAMC",
   "iconGlyph": "MC",

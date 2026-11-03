@@ -142,6 +142,7 @@ class HlsSource {
             const mi = parseMediaInfo(text, this.url);
             this.video = { width: 0, height: 0, codecs: '', url: this.url, segs: mi.segs, ended: mi.ended };
             if (this.opts.startAt > 0) this._skip(this.opts.startAt);
+            else if (this.opts.baseT > 0) this.startT = this.opts.baseT;
             return this;
         }
         const m = parseMaster(text, this.url);
@@ -157,6 +158,7 @@ class HlsSource {
         const au = m.audio[v.audio];
         if (au) { const ai = parseMediaInfo(String(await this.get(au)), au); this.audio = { url: au, segs: ai.segs, ended: ai.ended }; }
         if (this.opts.startAt > 0) this._skip(this.opts.startAt);
+        else if (this.opts.baseT > 0) this.startT = this.opts.baseT;     // the server already starts there (StartTimeTicks)
         return this;
     }
 

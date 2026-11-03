@@ -76,6 +76,22 @@ mgu.run({
         // what an earlier run left in /tmp (RAM on the unit): sound and track files of a player that was killed
         try { fs.readdirSync('/tmp').filter((f) => /^mgu-media-/.test(f)).forEach((f) => { try { fs.unlinkSync('/tmp/' + f); } catch (e) { /* not ours */ } }); } catch (e) { /* no /tmp here */ }
 
+        /* ---------------- why the last run ended, and how much memory this one uses ----------------
+         * The app has restarted on the car after a while ("App wird geladen"). The kit writes the reason
+         * to data/<id>.log (FATAL + stack on a crash, the RSS at exit). This reads the last such line so
+         * it shows on Diag, and samples RSS: a steady climb points at a leak / out-of-memory restart. */
+        let lastExit = '';
+        try {
+            const lf = path.join(dataDir, ((ctx.spec && ctx.spec.id) || 'media') + '.log');
+            const lines = (fs.existsSync(lf) ? fs.readFileSync(lf, 'utf8') : '').trim().split('\n');
+            for (let i = lines.length - 1; i >= 0 && !lastExit; i--) if (/ (FATAL|ERROR) /.test(lines[i])) lastExit = lines[i].replace(/\s+/g, ' ').slice(0, 150);
+            if (lastExit) log.warn('last run ended with: ' + lastExit.replace(/^\S+ /, ''));
+        } catch (e) { /* no log yet */ }
+        const rssMB = () => Math.round(process.memoryUsage().rss / 1048576);
+        let rss = rssMB(), peakRss = rss, rss0 = rss;
+        setInterval(() => { rss = rssMB(); if (rss > peakRss) peakRss = rss; }, 10000);
+        setInterval(() => log.info('memory: ' + rssMB() + ' MB (peak ' + peakRss + ', start ' + rss0 + ')' + (video ? ', video on ' + video.target : music ? ', music' : '')), 120000);
+
         let sig = null;
         try { sig = require('./kit/signals'); } catch (e) { /* not on a unit */ }
         // the park check (./parkgate): true only when parked; false when driving, not known, or not started
@@ -305,8 +321,11 @@ mgu.run({
             await stopAll();
             playing = it;
             vq = queue || null;
-            const resume = settings.get('resume') !== false && it.offset > 30000 && it.offset < it.duration - 60000;
-            const from = at != null ? at : resume ? it.offset / 1000 : 0;
+            // the resume point: the server's current one (set here or on another device), else what the list had
+            let off = it.offset;
+            if (at == null) { try { const rp = await jf.resumePos(it.id); if (rp != null) off = rp; } catch (e) { /* keep it.offset */ } }
+            const resume = settings.get('resume') !== false && off > 30000 && (!it.duration || off < it.duration - 60000);
+            const from = at != null ? at : resume ? off / 1000 : 0;
             const sharp = settings.get('quality') === 'sharp';
             status = 'Asking the server for ' + it.title + '...'; setPage('player');
             let info;
@@ -318,9 +337,9 @@ mgu.run({
             // the MGU display has none. Bitrates for Baseline (no B-frames, no CABAC: it needs more)
             const target = settings.get('target') || 'map';
             const fps = sharp && target !== 'cid' ? 15 : 30;
-            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps }, p));
+            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps, startSec: from }, p));
             const bufS = +(settings.get('buffer') || 600);
-            video = new ClusterVideo({ url, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            video = new ClusterVideo({ url, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: 0, baseT: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
@@ -375,6 +394,27 @@ mgu.run({
             else if (music) { music.seek(sec * 1000); musicReport(music); }
         }
         const position = () => (video ? video.at() : music ? music.elapsed() / 1000 : 0);
+        // scrubbing (knob or a tap on the bar): the target is shown at once, the seek follows after a short
+        // pause, so turning several notches restarts the transcode once, not every notch
+        let scrubTo = null, scrubTimer = null;
+        function scrubAbs(sec) {
+            if (!video || !playing) return;
+            const dur = playing.duration / 1000;
+            scrubTo = Math.max(0, dur > 0 ? Math.min(dur - 3, sec) : sec);
+            overlayUntil = Date.now() + 5000;                 // (full screen: show the overlay while scrubbing)
+            clearTimeout(scrubTimer);
+            scrubTimer = setTimeout(() => { const to = scrubTo; scrubTo = null; seekTo(to); }, 700);
+            touch();
+        }
+        const scrub = (delta) => scrubAbs((scrubTo != null ? scrubTo : position()) + delta);
+        const shownPos = () => (scrubTo != null ? scrubTo : where());
+        /** a tap on the progress bar (bx..bx+bw wide, a band around by): seek to that point */
+        function seekBarHit(x, y, bx, by, bw) {
+            if (!video || !playing || !(playing.duration > 0)) return false;
+            if (x < bx || x > bx + bw || y < by - 18 || y > by + 22) return false;
+            scrubAbs(Math.max(0, Math.min(1, (x - bx) / bw)) * (playing.duration / 1000));
+            return true;
+        }
         async function castPlay(r) {
             let items = await jf.items(r.ids);
             // an album, a season, a playlist: what is in it
@@ -469,10 +509,12 @@ mgu.run({
                 const i = c.top + Math.floor((y - LIST_Y) / ROW_H);
                 if (y >= LIST_Y && i >= 0 && i < c.items.length && i < c.top + ROWS) { if (c.sel === i) choose(); else { c.sel = i; touch(); } }
             } else if (fullScreen()) {
-                // full screen: a tap shows the title, the time and the tabs; a tap while they show pauses / plays
-                if (overlay()) togglePause();
+                // full screen: a tap shows title, time and tabs; while they show, the bar seeks and elsewhere pauses
+                if (overlay()) { if (!seekBarHit(x, y, 40, H - 60, W - 80)) togglePause(); }
                 overlayUntil = Date.now() + 5000; touch();
                 setTimeout(touch, 5100);
+            } else if (page === 'player' && video) {
+                seekBarHit(x, y, 40, 186, Math.min(PIC.x - 80, 700));
             } else if (page === 'server' && srvMode === 'form') {
                 const f = FIELDS.find((d) => x >= d[2] && x < d[2] + d[3]);
                 if (y >= 96 && y < 140 && f) field = f[0];
@@ -492,6 +534,11 @@ mgu.run({
                 } else if (page === 'server' && srvMode === 'form') {
                     if (how === 'turn') keyboard.move(step > 0 ? 'right' : 'left'); else keyboard.move(dir);
                     touch();
+                } else if (page === 'player' && video) {
+                    // turn: scrub +/- 10 s a notch; tilt left / right: -30 / +30 s
+                    if (how === 'turn') scrub(step * 10);
+                    else if (dir === 'left') scrub(-30);
+                    else if (dir === 'right') scrub(30);
                 } else if (page === 'player' && music) {
                     if (how === 'turn' || dir === 'left' || dir === 'right') { if (step > 0 || dir === 'right') music.next(); else music.prev(); touch(); }
                 }
@@ -608,11 +655,11 @@ mgu.run({
             if (!overlay()) return;
             cv.fillRect(0, H - 120, W, 120, withAlpha('#000000', 0.7));
             cv.text(playing.title + (playing.sub ? '  -  ' + playing.sub : ''), 40, H - 82, 24, '#ffffff', { font: 'bold', literal: true });
-            const pos = where(), dur = playing.duration / 1000;
+            const pos = shownPos(), dur = playing.duration / 1000;
             cv.fillRect(40, H - 60, W - 80, 6, withAlpha('#ffffff', 0.25));
             if (dur > 0) cv.fillRect(40, H - 60, Math.round((W - 80) * Math.min(1, pos / dur)), 6, t.accent);
-            cv.text(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : '') + (video.paused ? '   -   Paused' : '') + (video.buf ? '   -   buffer ' + fmtAhead(video.buf.ahead()) : ''), 40, H - 22, 20, '#ffffff', lit);
-            cv.text('Tap: ' + (video.paused ? 'play' : 'pause'), W - 40, H - 22, 20, '#ffffff', { align: 'right', literal: true });
+            cv.text(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : '') + (scrubTo != null ? '   ->   seeking' : video.paused ? '   -   Paused' : '') + (video.buf ? '   -   buffer ' + fmtAhead(video.buf.ahead()) : ''), 40, H - 22, 20, '#ffffff', lit);
+            cv.text('Tap bar: seek   -   tap: ' + (video.paused ? 'play' : 'pause'), W - 40, H - 22, 20, '#ffffff', { align: 'right', literal: true });
         }
 
         const STATE_TEXT = (st) => (/^playing/.test(st) ? 'Playing' : /^(starting|loading|buffering)/.test(st) ? 'Loading...' : st === 'done' ? 'Finished'
@@ -633,10 +680,10 @@ mgu.run({
                 say(st, 120, 24, !parked || /^Error/.test(st) ? (t.warn || t.accent) : t.text);
                 say('Video on: ' + TARGET_NAME[video.target], 156, 20, t.dim);
                 // where it is
-                const pos = where(), dur = playing.duration / 1000, bw = Math.min(wTxt, 700);
+                const pos = shownPos(), dur = playing.duration / 1000, bw = Math.min(wTxt, 700);
                 cv.fillRect(x, 186, bw, 8, withAlpha('#ffffff', 0.15));
                 if (dur > 0) cv.fillRect(x, 186, Math.round(bw * Math.min(1, pos / dur)), 8, t.accent);
-                say(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : ''), 226, 22, t.text);
+                say(fmt(pos) + (dur > 0 ? '  /  ' + fmt(dur) : '') + (scrubTo != null ? '   ->   seeking' : ''), 226, 22, t.text);
                 if (video.buf) say('Buffer: ' + fmtAhead(video.buf.ahead()) + ' ahead', 260, 18, t.dim);
                 const hint = video.hint();
                 if (hint && !debug()) {                    // (what the user must do: in two lines)
@@ -644,7 +691,10 @@ mgu.run({
                     say(hint.slice(hint.indexOf(' - ') + 3), 446, 18, t.warn || t.accent);
                 }
                 if (debug()) video.lines().slice(0, 9).forEach((l, i) => cv.text(String(l).slice(0, 118), x, 300 + i * 22, 16, t.dim, lit));
-                else say((isPaused() ? 'Play' : 'Pause') + ': press the controller or the button below.', 480, 18, t.dim);
+                else {
+                    say((isPaused() ? 'Play' : 'Pause') + ': press the controller or the button below.', 480, 18, t.dim);
+                    say('Seek: turn the controller (10 s), tilt left / right (30 s), or tap the bar.', 506, 18, t.dim);
+                }
             } else if (music) {
                 const L = music.lines();
                 say(L[0].replace(/^music: /, ''), 120, 24, t.text);
@@ -661,8 +711,9 @@ mgu.run({
             header(cv, t, 'Diagnostics  -  ' + ctx.spec.title + ' ' + ctx.spec.version);
             const host = (/^https?:\/\/([^/:]+)/.exec(conf.base || '') || [])[1], dn = host && dnsResolved[host];
             const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why(),
-                'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-'), remote.line()]
-                .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-12));
+                'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-'), remote.line(),
+                'memory: ' + rssMB() + ' MB (peak ' + peakRss + ', start ' + rss0 + ')' + (lastExit ? '   -   last run ended: ' + lastExit.replace(/^\S+ /, '') : '')]
+                .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-11));
             lines(cv, t, L, 110, 17, 22);
         }
 

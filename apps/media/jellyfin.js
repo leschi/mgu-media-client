@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.4.2';
+const VERSION = '0.4.3';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -198,6 +198,13 @@ class Jellyfin {
         return { mediaSourceId: ms.Id || String(id).replace(/-/g, ''), playSessionId: (j && j.PlaySessionId) || '', container: ms.Container || '', audioCodec: a ? a.Codec || '' : '' };
     }
 
+    /** the item's saved resume position (ms), fresh from the server (set here or on another device), else null */
+    async resumePos(id) {
+        const j = await this._user('/Items/' + id, '/Users/' + this.userId + '/Items/' + id, { UserId: this.userId });
+        const ud = j && !j.missing && j.UserData;
+        return ud && ud.PlaybackPositionTicks ? Math.round(ud.PlaybackPositionTicks / TICKS) : null;
+    }
+
     /**
      * The token for the streams (playlists, segments, track files): in the URL as ApiKey (10.11 on;
      * api_key, the old name, is off there by default: http 401 on the car with 12.4) and api_key (older
@@ -219,6 +226,7 @@ class Jellyfin {
         const w = o.width || 480, h = o.height || 270;
         return this.base + '/Videos/' + id + '/master.m3u8?' + qs({
             MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, DeviceId: this.deviceId, ApiKey: this.token, api_key: this.token,
+            StartTimeTicks: o.startSec > 0 ? Math.round(o.startSec * 1000 * TICKS) : undefined,
             VideoCodec: 'h264', AudioCodec: 'aac', SegmentContainer: 'ts', Profile: 'baseline', 'h264-profile': 'baseline', Level: 31, 'h264-level': 31,
             MaxWidth: w, MaxHeight: h, VideoBitrate: o.bitrate || 1200000, AudioBitrate: 160000, AudioChannels: 2, TranscodingMaxAudioChannels: 2,
             MaxFramerate: o.fps || 30, AllowVideoStreamCopy: false, AllowAudioStreamCopy: false, BreakOnNonKeyFrames: false, RequireAvc: false,

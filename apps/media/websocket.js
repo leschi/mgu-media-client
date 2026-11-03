@@ -92,6 +92,11 @@ class WebSocket extends EventEmitter {
     }
 
     _data(d) {
+        // a throw in here would reach the socket's 'data' event and crash the process: handle it instead
+        try { this._parse(d); } catch (e) { this._fail(e instanceof Error ? e : new Error(String(e))); }
+    }
+
+    _parse(d) {
         this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
         for (;;) {
             const b = this.buf;

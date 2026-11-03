@@ -119,7 +119,8 @@ test('jellyfin: the video URL asks for Baseline H.264 in TS at 480x270; track fi
     assert.ok(u.indexOf('http://s:8096/Videos/m1/master.m3u8?MediaSourceId=src1&PlaySessionId=ps1&DeviceId=dev&ApiKey=tk&api_key=tk&') === 0, u);
     for (const p of ['VideoCodec=h264', 'AudioCodec=aac', 'SegmentContainer=ts', 'Profile=baseline', 'h264-profile=baseline', 'MaxWidth=480', 'MaxHeight=270', 'AudioChannels=2', 'AllowVideoStreamCopy=false'])
         assert.ok(u.indexOf('&' + p) > 0, p);
-    assert.ok(!/StartTimeTicks/.test(u), 'a start is a segment to start at (hls startAt), not a server offset');
+    assert.ok(!/StartTimeTicks/.test(u), 'no start given: no server offset');
+    assert.ok(/&StartTimeTicks=600000000(&|$)/.test(jf.videoUrl('m1', Object.assign({ startSec: 60 }, pi))), 'a resume / seek starts the transcode there (StartTimeTicks, 60 s)');
     assert.strictEqual(hide(u).indexOf('tk'), -1, 'the token is not logged');
     const flac = await jf.trackFile('t1');
     assert.deepStrictEqual([flac.url, flac.ext], ['http://s:8096/Audio/t1/stream.flac?static=true&MediaSourceId=t1&ApiKey=tk&api_key=tk', 'flac']);
@@ -169,6 +170,18 @@ test('hls: start at a position - the segment holding it; times count from there 
     const at0 = new HlsSource('http://s/m.m3u8', { get: () => Promise.resolve(Buffer.from(whole(3))) });
     await at0.open();
     assert.strictEqual(at0.startT, 0); assert.strictEqual(at0.video.segs.length, 3);
+    // baseT: the server already started there (StartTimeTicks), so no segment is skipped, only the clock offset
+    const srv = new HlsSource('http://s/m.m3u8', { get: () => Promise.resolve(Buffer.from(whole(5))), baseT: 30 });
+    await srv.open();
+    assert.strictEqual(srv.startT, 30); assert.strictEqual(srv.video.segs.length, 5, 'no segment dropped');
+    assert.deepStrictEqual(srv.video.segs.slice(0, 2).map((s) => s.t), [0, 6]);
+});
+
+test('jellyfin resumePos(): the server\'s saved position in ms, else null', async () => {
+    const net = fakeNet({ '/Items/m1': { body: { Id: 'm1', UserData: { PlaybackPositionTicks: 615000000 } } }, '/Items/m2': { body: { Id: 'm2', UserData: {} } } });
+    const jf = new Jellyfin({ deviceId: 'd', request: net.request, base: 'http://s:8096', token: 'tk', userId: 'u1' });
+    assert.strictEqual(await jf.resumePos('m1'), 61500);
+    assert.strictEqual(await jf.resumePos('m2'), null);
 });
 
 test('hls: a transcode\'s playlist grows (refresh), segments cached and tried again while not made yet', async () => {
