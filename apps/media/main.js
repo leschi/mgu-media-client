@@ -11,6 +11,9 @@
  *           parked (./parkgate), the sound on through the car's speakers (BMW's media player) - or music
  *   Diag    what happened (the log), the video's and the sound's state
  *
+ * The Jellyfin apps on a phone can play on the car too (cast icon -> "BMW MGU", ./remote): the phone
+ * chooses and controls, the car gets the video from the server as when chosen here.
+ *
  * The video path (decode in the app, cluster-render video layer, the sound as a local AAC file for
  * BMW's player, the park check) came from a prior project, where it ran on the car (0.2.40 - 0.2.44).
  */
@@ -27,6 +30,7 @@ const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
 const { ClusterRender } = require('./cluster_render_client');
 const { MusicPlayer } = require('./musicplayer');
+const { Remote } = require('./remote');
 const { lookup, resolved: dnsResolved } = require('./dns');
 
 const W = 1600, H = 520;
@@ -134,6 +138,7 @@ mgu.run({
             status = 'Server: ' + info.name + ', ' + conf.userName;
             srvMode = 'idle';
             log.info('signed in to ' + info.name + ' (' + info.version + ') at ' + jf.base);
+            remote.stop(); remote.start();
             openRoot();
             setPage('browse');
         }
@@ -262,12 +267,14 @@ mgu.run({
             if (!it) return;
             if (!it.leaf) return open(it.title, it);
             if (it.audio) return playMusic(c.items, c.sel);
-            return playVideo(it);
+            return playVideo(it, undefined, null);
         }
 
         /* ================= Player ================= */
         let video = null, music = null, playing = null;     // playing: the item
         let pb = null, progressT = null;                    // pb: the play session { id, mediaSourceId, playSessionId }
+        let vq = null;                                      // videos a phone sent together (a season): { items, i }
+        let mrep = null, musicT = null;                     // the track the server was told of: { id, ps, ms }
         const where = () => (video ? video.at() : 0);
         // one connection to cluster-render for every video, kept (as waze-on-cluster): a target change drops
         // the old layer and makes the new one on the same socket, in that order. A new connection per
@@ -280,7 +287,9 @@ mgu.run({
 
         async function stopAll() {
             clearInterval(progressT); progressT = null;
+            clearInterval(musicT); musicT = null;
             const v = video, m = music, p = pb;
+            if (m) musicReport(m, true);
             video = null; music = null; pb = null;
             const done = [];
             if (v) {
@@ -292,9 +301,10 @@ mgu.run({
             touch();
         }
 
-        async function playVideo(it, at) {
+        async function playVideo(it, at, queue) {
             await stopAll();
             playing = it;
+            vq = queue || null;
             const resume = settings.get('resume') !== false && it.offset > 30000 && it.offset < it.duration - 60000;
             const from = at != null ? at : resume ? it.offset / 1000 : 0;
             const sharp = settings.get('quality') === 'sharp';
@@ -314,7 +324,12 @@ mgu.run({
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
-            progressT = setInterval(() => { if (video && pb === p) jf.report('progress', Object.assign({ timeMs: video.at() * 1000, paused: video.paused }, p)); }, 10000);
+            progressT = setInterval(() => {
+                if (!video || pb !== p) return;
+                // (a phone sent several: the next one once this is over)
+                if (video.state === 'done' && vq && vq.i + 1 < vq.items.length) { vq.i++; playVideo(vq.items[vq.i], 0, vq); return; }
+                jf.report('progress', Object.assign({ timeMs: video.at() * 1000, paused: video.paused }, p));
+            }, 5000);
             touch();
         }
 
@@ -324,9 +339,20 @@ mgu.run({
             const start = tracks.indexOf(items[i]);
             playing = items[i];
             if (!sig || !sig.hasNative()) { status = 'No sound here (BMW\'s player is on the unit only)'; setPage('player'); return; }
-            music = new MusicPlayer({ server: jf, sig, lookup, log });
-            music.play(tracks, Math.max(0, start)).catch((e) => log.warn('music: ' + e.message));
+            const m = new MusicPlayer({ server: jf, sig, lookup, log });
+            music = m;
+            m.play(tracks, Math.max(0, start)).catch((e) => log.warn('music: ' + e.message));
+            musicT = setInterval(() => musicReport(m), 5000);
             setPage('player');
+        }
+
+        /** the server told which track plays and where (its "now playing", which a phone's remote shows) */
+        function musicReport(m, final) {
+            const t = m.current(), ms = m.elapsed();
+            if (mrep && (final || !t || t.id !== mrep.id)) { jf.report('stop', { id: mrep.id, playSessionId: mrep.ps, timeMs: mrep.ms, method: 'DirectPlay' }); mrep = null; }
+            if (final || !t || (m.state !== 'playing' && !m.paused)) return;
+            if (!mrep) { mrep = { id: t.id, ps: crypto.randomBytes(8).toString('hex'), ms }; jf.report('start', { id: t.id, playSessionId: mrep.ps, timeMs: ms, method: 'DirectPlay' }); }
+            else { mrep.ms = ms; jf.report('progress', { id: t.id, playSessionId: mrep.ps, timeMs: ms, paused: m.paused, method: 'DirectPlay' }); }
         }
 
         const isPaused = () => !!((video && video.paused) || (music && music.paused));
@@ -335,19 +361,74 @@ mgu.run({
             if (!m) return;
             if (m.paused) m.resume(); else m.pause();
             if (video && pb) jf.report('progress', Object.assign({ timeMs: video.at() * 1000, paused: video.paused }, pb));
+            if (music) musicReport(music);
             buttons(); touch();
         }
+
+        /* ================= a phone as the remote (the Jellyfin app's cast icon -> BMW MGU) ================= */
+        const remote = new Remote({ jf, log });
+        let notice = null;                                  // a message a phone sent: { text, until }
+        /** to sec into what plays: a video starts again there (the server transcodes from that segment) */
+        function seekTo(sec) {
+            sec = Math.max(0, sec);
+            if (video && playing) playVideo(playing, sec, vq);
+            else if (music) { music.seek(sec * 1000); musicReport(music); }
+        }
+        const position = () => (video ? video.at() : music ? music.elapsed() / 1000 : 0);
+        async function castPlay(r) {
+            let items = await jf.items(r.ids);
+            // an album, a season, a playlist: what is in it
+            if (items.length === 1 && !items[0].leaf) items = (await jf.children(items[0])).filter((x) => x.leaf);
+            if (!items.length) throw new Error('nothing to play in what was sent');
+            log.info('from a phone: ' + r.command + ' ' + items[0].title + (items.length > 1 ? ' and ' + (items.length - 1) + ' more' : '') + (r.startMs ? ' at ' + Math.round(r.startMs / 1000) + ' s' : ''));
+            const later = r.command === 'PlayNext' || r.command === 'PlayLast';
+            if (later && music && items[0].audio) { music.add(items, r.command === 'PlayNext'); touch(); return undefined; }
+            if (later && video && !items[0].audio) {
+                if (!vq) vq = { items: [playing], i: 0 };
+                vq.items.splice(r.command === 'PlayNext' ? vq.i + 1 : vq.items.length, 0, ...items.filter((x) => !x.audio));
+                return undefined;
+            }
+            const i = Math.max(0, Math.min(r.startIndex || 0, items.length - 1));
+            if (items[i].audio) return playMusic(items, i);
+            const vids = items.filter((x) => !x.audio);
+            // (no start given: as when chosen here - where it was left, with Settings -> Resume on)
+            return playVideo(items[i], r.startMs != null ? r.startMs / 1000 : undefined, vids.length > 1 ? { items: vids, i: vids.indexOf(items[i]) } : null);
+        }
+        remote.on('play', (r) => castPlay(r).catch((e) => { status = 'From the phone: ' + e.message; log.warn(status); touch(); }));
+        remote.on('playstate', (r) => {
+            const m = video || music;
+            if (r.command === 'Pause') { if (m && !m.paused) togglePause(); }
+            else if (r.command === 'Unpause') { if (m && m.paused) togglePause(); }
+            else if (r.command === 'PlayPause') togglePause();
+            else if (r.command === 'Stop') { stopAll(); playing = null; vq = null; status = 'Stopped from the phone'; }
+            else if (r.command === 'Seek') { if (r.seekMs != null) seekTo(r.seekMs / 1000); }
+            else if (r.command === 'Rewind') seekTo(position() - 10);
+            else if (r.command === 'FastForward') seekTo(position() + 30);
+            else if (r.command === 'NextTrack' || r.command === 'PreviousTrack') {
+                const d = r.command === 'NextTrack' ? 1 : -1;
+                if (music) { if (d > 0) music.next(); else music.prev(); }
+                else if (vq && vq.items[vq.i + d]) { vq.i += d; playVideo(vq.items[vq.i], 0, vq); }
+            }
+            buttons(); touch();
+        });
+        remote.on('message', (r) => {
+            const text = [r.header, r.text].filter(Boolean).join(': ');
+            log.info('message from a phone: ' + text);
+            notice = { text, until: Date.now() + 8000 };
+            touch(); setTimeout(touch, 8100);
+        });
+        if (signedIn()) remote.start();
 
         /** another target while a video plays: it starts again there, where it was */
         settings.onChange((k) => {
             if (k === 'signOut' && settings.get('signOut')) {
                 try { settings.set('signOut', false); } catch (e) { /* stays */ }
-                stopAll(); conf.token = ''; conf.userId = ''; save();          // (the address stays: signing in again is shorter)
+                stopAll(); remote.stop(); conf.token = ''; conf.userId = ''; save();          // (the address stays: signing in again is shorter)
                 jf.token = ''; jf.userId = ''; stack = []; status = 'Signed out'; setPage('server');
             }
             if (k === 'debug' && !debug() && page === 'diag') setPage('player');
             if ((k === 'target' || k === 'quality' || k === 'buffer') && video && playing && !playing.audio) {
-                playVideo(playing, where());
+                playVideo(playing, where(), vq);
             }
             touch();
         });
@@ -374,7 +455,7 @@ mgu.run({
         ui.onClick('BTN2', () => {
             if (page === 'server') { if (srvMode === 'form') signInPassword(); else { stopQuick(); srvMode = 'form'; field = conf.base ? 'user' : 'url'; status = 'Server address (http://IP:8096), then Quick Connect - or user and password'; } }
             else if (page === 'browse') back();
-            else if (page === 'player') { stopAll(); playing = null; }
+            else if (page === 'player') { stopAll(); playing = null; vq = null; status = ''; }
             else if (page === 'diag') setPage('browse');
             buttons(); touch();
         });
@@ -538,7 +619,8 @@ mgu.run({
             : /^error/.test(st) ? st.replace(/^error: /, 'Error: ') : st === 'stopped' ? 'Stopped' : st);
 
         function drawPlayer(cv, t) {
-            if (!playing) { header(cv, t, 'Nothing plays'); cv.text(status || 'Choose a video or music in Browse.', 40, 130, 22, t.dim, lit); return; }
+            if (!playing) { header(cv, t, 'Nothing plays'); cv.text(status || 'Choose a video or music in Browse.', 40, 130, 22, t.dim, lit);
+                cv.text('Or from your phone: the Jellyfin app, signed in as ' + (conf.userName || 'you') + ' -> the cast icon -> BMW MGU.', 40, 170, 20, t.dim, lit); return; }
             const scr = video && video.screen();
             if (scr) { drawScreen(cv, t, scr); return; }
             header(cv, t, playing.title + (playing.sub ? '  -  ' + playing.sub : ''));
@@ -579,7 +661,7 @@ mgu.run({
             header(cv, t, 'Diagnostics  -  ' + ctx.spec.title + ' ' + ctx.spec.version);
             const host = (/^https?:\/\/([^/:]+)/.exec(conf.base || '') || [])[1], dn = host && dnsResolved[host];
             const L = ['server: ' + (conf.base || '-') + ', signed in: ' + (signedIn() ? conf.userName || 'yes' : 'no') + ', park check: ' + gate.why(),
-                'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-')]
+                'name lookup: ' + (dn ? host + ' -> ' + dn.address + ' (' + dn.how + ')' : '-'), remote.line()]
                 .concat(video ? video.lines().slice(0, 6) : [], music ? music.lines().slice(0, 3) : [], ring.slice(-12));
             lines(cv, t, L, 110, 17, 22);
         }
@@ -601,6 +683,10 @@ mgu.run({
                 if (!drawErr) log.error('draw ' + page + ': ' + (e && e.stack || e));
                 drawErr = (e && e.message) || String(e);
                 cv.text('Drawing failed: ' + drawErr, 40, 480, 18, t.warn || t.accent, lit);
+            }
+            if (notice && Date.now() < notice.until) {
+                cv.fillRect(W - 760, 92, 720, 56, withAlpha('#000000', 0.8));
+                cv.text(notice.text.slice(0, 64), W - 740, 128, 22, '#ffffff', lit);
             }
             if (!fullScreen() || overlay()) G.frame(cv, t, TABS(), PAGES().indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
             return ui.image('MAIN_GFX', cv);

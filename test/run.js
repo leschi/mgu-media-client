@@ -5,6 +5,7 @@ require('./jellyfin.test');
 require('./png.test');
 require('./buffer.test');
 require('./player.test');
+require('./remote.test');
 
 const { runAll } = require('./_harness');
 runAll().then((failures) => process.exit(failures ? 1 : 0));

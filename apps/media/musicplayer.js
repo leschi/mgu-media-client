@@ -6,7 +6,7 @@
  * Sound only: it plays while driving too.
  *
  *   const m = new MusicPlayer({ server: jellyfin, sig, lookup, log });   (server.trackFile(id) -> { url, ext })
- *   m.play(tracks, 0); m.next(); m.prev(); m.lines(); await m.stop();
+ *   m.play(tracks, 0); m.next(); m.prev(); m.seek(ms); m.add(tracks); m.elapsed(); m.lines(); await m.stop();
  */
 const fs = require('fs');
 const http = require('http');
@@ -101,6 +101,7 @@ class MusicPlayer {
     async _go(i, g) {
         this.i = i;
         this.played = false; this.paused = false;
+        this.at = { ms: 0, t: 0 };
         this.state = 'fetching';
         this._tidy();
         try {
@@ -122,6 +123,7 @@ class MusicPlayer {
         Promise.all([this.media.get('currentItemTime'), this.media.get('playerState')]).then((r) => {
             const e = /"elapsed":(\d+)/.exec(r[0]), tot = /"total":(\d+)/.exec(r[0]), playing = /PLAY"/.test(r[1]);
             if (e && tot) this.line = 'time ' + Math.round(+e[1] / 1000) + ' / ' + Math.round(+tot[1] / 1000) + ' s';
+            if (e) this.at = { ms: +e[1], t: Date.now() };
             if (playing) this.played = true;
             const over = this.played && !playing && (!tot || !e || +tot[1] - +e[1] < 2500);
             if (over && this.state === 'playing') {
@@ -131,11 +133,30 @@ class MusicPlayer {
         }).catch(() => {});
     }
 
+    /** where in the track (ms): the player's time read last, plus what passed since */
+    elapsed() { const a = this.at || { ms: 0, t: 0 }; return a.t && !this.paused && this.state === 'playing' ? a.ms + Date.now() - a.t : a.ms; }
+
+    /** to ms into the track */
+    seek(ms) {
+        if (!this.media || this.state !== 'playing') return;
+        this.at = { ms, t: Date.now() };
+        this.media.call(this.media.mp, 'setTime', { newTimeElapsed: Math.max(0, Math.round(ms)) }).catch((e) => this._event('seek: ' + e.message));
+    }
+
+    /** more tracks after the list (a phone's "play next" / "add to queue": next = right after this one) */
+    add(tracks, next) {
+        const t = tracks.filter((x) => x.audio);
+        if (next) this.tracks.splice(this.i + 1, 0, ...t); else this.tracks.push(...t);
+        // (a file fetched for the old next track: kept under its index, which may now be another track's)
+        if (next) Object.keys(this.files).forEach((k) => { if (+k > this.i) { const e = this.files[k]; delete this.files[k]; e.ready.then(() => { try { fs.unlinkSync(e.file); } catch (x) { /* gone */ } }, () => {}); } });
+        if (this.state === 'done' && t.length) this._go(this.i + 1, ++this.gen);
+    }
+
     next() { if (this.i + 1 < this.tracks.length) this._go(this.i + 1, ++this.gen); }
 
     /** BMW's player paused / on again */
-    pause() { if (!this.media || this.paused) return; this.paused = true; this.media.button('PAUSE').catch(() => {}); this._event('paused'); }
-    resume() { if (!this.media || !this.paused) return; this.paused = false; this.media.button('PLAY').catch(() => {}); this._event('playing on'); }
+    pause() { if (!this.media || this.paused) return; this.at = { ms: this.elapsed(), t: Date.now() }; this.paused = true; this.media.button('PAUSE').catch(() => {}); this._event('paused'); }
+    resume() { if (!this.media || !this.paused) return; this.paused = false; this.at.t = Date.now(); this.media.button('PLAY').catch(() => {}); this._event('playing on'); }
     prev() { this._go(Math.max(0, this.i - 1), ++this.gen); }
 
     /** resolves once the sound is off and the AudioManager connection gone */

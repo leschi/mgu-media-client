@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.3.2';
+const VERSION = '0.4.0';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -181,6 +181,14 @@ class Jellyfin {
         return ((j && j.Items) || []).map(item);
     }
 
+    /** items by their ids, in that order (what a phone sends the car to play: ./remote) */
+    async items(ids) {
+        if (!ids.length) return [];
+        const j = await this._user('/Items', '/Users/' + this.userId + '/Items', { UserId: this.userId, Ids: ids.join(','), Fields: 'ProductionYear', EnableImages: true, ImageTypeLimit: 1, EnableImageTypes: 'Primary' });
+        const got = ((j && j.Items) || []).map(item);
+        return ids.map((id) => got.find((x) => x.id === id)).filter(Boolean);
+    }
+
     /* ---- playing ---- */
     /** the item's media source and a play session: { mediaSourceId, playSessionId, container, audioCodec } */
     async playbackInfo(id) {
@@ -232,7 +240,7 @@ class Jellyfin {
     report(state, o) {
         const p = { start: '/Sessions/Playing', progress: '/Sessions/Playing/Progress', stop: '/Sessions/Playing/Stopped' }[state];
         const body = { ItemId: o.id, MediaSourceId: o.mediaSourceId, PlaySessionId: o.playSessionId, PositionTicks: Math.round((o.timeMs || 0) * TICKS),
-            PlayMethod: 'Transcode', CanSeek: true, IsPaused: !!o.paused };
+            PlayMethod: o.method || 'Transcode', CanSeek: true, IsPaused: !!o.paused };
         return this._call('POST', p, body, { timeout: 8000 }).catch(() => {});
     }
 
