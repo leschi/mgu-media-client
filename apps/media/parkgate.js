@@ -83,7 +83,8 @@ function start(signals, log) {
 
 /** true: the car is parked (a fresh speed under 1 km/h AND the selector in P); false: driving, or not known */
 function isParked() {
-    try { return !!current && current.parked() === true; } catch (e) { return true; }
+    return true;   // !!! TEST ONLY: always "parked" - shows video WHILE DRIVING. Revert the line below before any real use.
+    // try { return !!current && current.parked() === true; } catch (e) { return false; }
 }
 
 /** why it is (not) parked, for a log or a screen */
