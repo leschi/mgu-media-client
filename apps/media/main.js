@@ -357,9 +357,14 @@ mgu.run({
             // the MGU display has none. Bitrates for Baseline (no B-frames, no CABAC: it needs more)
             const target = settings.get('target') || 'map';
             const fps = sharp && target !== 'cid' ? 15 : 30;
-            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps, startSec: from }, p));
+            // Seek / resume: NO StartTimeTicks. Jellyfin's HLS playlist lists the WHOLE runtime (absolute
+            // segment indices); StartTimeTicks moves the transcoder but the client still has to ask for the
+            // segment at that time - asking for segment 0 against a transcoder parked at 37 min is a http 400.
+            // So we take the full playlist and skip to the segment holding `from` (startAt): the transcoder
+            // starts producing at that segment, which is how every Jellyfin client seeks.
+            const url = jf.videoUrl(it.id, Object.assign({ width: sharp ? 640 : 480, height: sharp ? 360 : 270, bitrate: sharp ? 3000000 : 2000000, fps }, p));
             const bufS = +(settings.get('buffer') || 600);
-            video = new ClusterVideo({ url, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: 0, baseT: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            video = new ClusterVideo({ url, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));
