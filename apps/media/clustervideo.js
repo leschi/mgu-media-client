@@ -8,7 +8,7 @@
  * (./h264dec, Baseline) and sends frames to a cluster-render video layer (4:2:0 atlas). Sound: AAC -
  * the audio rendition's segments, or (a server transcode) the sound in the same TS segments - appended to
  * one local file BMW's player plays (it plays local files only; it follows the file as it grows, and
- * near the end it saw it is opened again at its time). Worked on the car in a prior project 0.2.40 - 0.2.44.
+ * near the end it saw it is opened again at its time).
  *
  *   const v = new ClusterVideo({ url | source, target: 'map', gate, lookup, sig, log });
  *   v.start(); ... v.lines() (Diag) ... v.stop();

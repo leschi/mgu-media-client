@@ -20,13 +20,11 @@ A media client app for the BMW MGU head unit (iDrive 7) that plays from your own
   - **User name and password** with the on-screen keyboard.
 
   Either way the app keeps only the server's access token (in its data folder, readable by the app only), not the password. *Sign out* in Settings forgets the token.
-- **Browse:** your libraries (movies, shows, music) and *Continue watching*, with the chosen item's poster or cover beside the list (fetched once the selection rests; `png.js` decodes it, no image library needed; it reaches the screen as a renderer pixmap, as a prior project's picture). Videos resume where you stopped, and the server learns how far you got.
+- **Browse:** your libraries (movies, shows, music) and *Continue watching*, with the chosen item's poster or cover beside the list (fetched once the selection rests; `png.js` decodes it, no image library needed; it reaches the screen as a renderer pixmap). Videos resume where you stopped, and the server learns how far you got.
 
 This project is not affiliated with or endorsed by Jellyfin or BMW.
 
 ## How it works
-
-
 
 **Picture**
 1. The server transcodes the video to HLS: H.264 and AAC in TS segments, 480×270 by default (`/Videos/{id}/master.m3u8`).
@@ -89,4 +87,4 @@ As for waze-on-cluster: the middle is the app's only while the cluster's **Centr
 1. Copy `apps/media/remotelog-config.sample.js` to `apps/media/remotelog-config.js` and fill in a jsonbin access key and a directory bin.
 2. Read what the cars sent: `node tools/remotelog-read.js` (the directory), or `node tools/remotelog-read.js <VIN>` (that car's latest).
 
-While this repository is **private**, `remotelog-config.js` is committed with a disposable test key (as in a prior project), so the Store build carries it to the car. **Before the repository is ever made public, revoke that key and remove the file** — otherwise anyone could read the car's VIN and log, or use up the key's requests. Use only a throwaway key with a low cap. Requests are few (on start, carrying the last run's end reason, and a memory line every two minutes) and capped in the config.
+`remotelog-config.js` is git-ignored, so no key is ever committed. Use only a disposable key with a low request cap — whoever has the key can read the car's VIN and log. Requests are few: on start (carrying the last run's end reason) and a memory line every two minutes, capped in the config.

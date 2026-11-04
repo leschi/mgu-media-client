@@ -1,6 +1,6 @@
 'use strict';
 /**
- * dns.js - name lookup with a fallback (from a prior project's online log): on the car the app's own DNS lookup
+ * dns.js - name lookup with a fallback: on the car the app's own DNS lookup
  * failed (ENOTFOUND) while connections to IP addresses worked. Then the name is looked up over HTTPS at
  * a fixed IP (DNS over HTTPS: Cloudflare 1.1.1.1, Google 8.8.8.8; their certificates name those IPs).
  * The TLS check of the real connection stays the same: it is made to the name, only its address comes

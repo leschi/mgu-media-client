@@ -1,6 +1,6 @@
 'use strict';
 /**
- * targets.js - cluster-render's targets and fitting a picture into one (as a prior project's cluster.js).
+ * targets.js - cluster-render's targets and fitting a picture into one.
  */
 // map = the area between the gauges (takes over the stock content with contend), panel = the whole
 // cluster, hud. panel and hud share a scene id: never both at once. The service's hello names the real

@@ -10,8 +10,9 @@ x_call/
 apps/media/data/
 
 
-# the online log: the config (key + directory bin) IS committed while this repo is private,
-# as in a prior project - revoke the key and remove the file before the repo ever goes public.
-# the per-car runtime state and the reader's cache stay local.
+# the online log: the per-car config (key + directory bin) is git-ignored - copy
+# remotelog-config.sample.js to remotelog-config.js and add a disposable key to turn it on.
+# the per-car runtime state and the reader's cache stay local too.
+apps/media/remotelog-config.js
 apps/media/remotelog-state.json
 tools/.remotelog-cache.json

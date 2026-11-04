@@ -1,8 +1,8 @@
 'use strict';
 /**
  * musicplayer.js - tracks from the server through BMW's media player: each track's own file is fetched
- * to /tmp (RAM on the unit) and played from there (the player plays local files only, in every format:
- * a prior project 0.2.37), the next one fetched while this one plays; a track's file goes once it is over.
+ * to /tmp (RAM on the unit) and played from there (the player plays local files only, in every format),
+ * the next one fetched while this one plays; a track's file goes once it is over.
  * Sound only: it plays while driving too.
  *
  *   const m = new MusicPlayer({ server: jellyfin, sig, lookup, log });   (server.trackFile(id) -> { url, ext })

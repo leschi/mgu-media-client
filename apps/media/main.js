@@ -15,7 +15,7 @@
  * chooses and controls, the car gets the video from the server as when chosen here.
  *
  * The video path (decode in the app, cluster-render video layer, the sound as a local AAC file for
- * BMW's player, the park check) came from a prior project, where it ran on the car (0.2.40 - 0.2.44).
+ * BMW's player, the park check) is proven on the car.
  */
 const mgu = require('./kit/mgu');
 const { withAlpha, rgba } = require('./kit/canvas');
@@ -252,7 +252,7 @@ mgu.run({
             return null;
         }
         /**
-         * The picture goes to the renderer as a mgu-render/1 pixmap (as a prior project's remote screen, on the
+         * The picture goes to the renderer as a mgu-render/1 pixmap (on the
          * car): the canvas here records drawing ops for the GPU renderer and has no drawImage (0.2.2 drew
          * with it: the drawing stopped there and the screen stayed as it was). Uploaded when the picture,
          * the theme or the connection changes; without pixmaps (no GPU renderer) no picture.
@@ -646,7 +646,7 @@ mgu.run({
         /**
          * The MGU display's video, full screen (op 19: the renderer reads the frames from the /dev/shm file
          * itself). On the car the app's page in the native dialect (mgu-render/1, embedded in the HMI's page)
-         * drew it black, as a prior project's pixmap; IterioDev's dialect (the app on its own layer over the screen,
+         * drew it black; IterioDev's dialect (the app on its own layer over the screen,
          * as IterioDev's YouTube player) draws op 19. So while a video plays there the display reconnects in
          * that dialect, and back afterwards. A tap shows the title, the time and the tabs for 5 s; a tap then,
          * or a press of the controller, pauses / plays.
@@ -789,7 +789,7 @@ function carVin() {
     });
 }
 
-// FrontCCU rotary encoder -> move/press (as a prior project: the knob counts by position, tilt / push on a change)
+// FrontCCU rotary encoder -> move/press (the knob counts by position, tilt / push on a change)
 function wireController(ctx, handlers, active) {
     const DEFL = { MITTELSTELLUNG: 0, NORD_KURZ_GEDRUECKT: 1, NORD_LANG_GEDRUECKT: 2, OST_KURZ_GEDRUECKT: 4, OST_LANG_GEDRUECKT: 5,
         SUED_KURZ_GEDRUECKT: 7, SUED_LANG_GEDRUECKT: 8, WEST_KURZ_GEDRUECKT: 10, WEST_LANG_GEDRUECKT: 11, SIGNAL_UNGUELTIG: 15 };

@@ -1,8 +1,7 @@
 'use strict';
 /**
  * shmvideo.js - the video on the MGU's own display: decoded frames (I420) written to a /dev/shm
- * file the GPU renderer (mgu-render) reads itself (kit/renderd PROTOCOL.md "Video"; a prior project writes
- * its screen the same way); the app's page draws op 19 (Recorder.video) where the picture goes.
+ * file the GPU renderer (mgu-render) reads itself (kit/renderd PROTOCOL.md "Video"); the app's page draws op 19 (Recorder.video) where the picture goes.
  * It stands in for the cluster-render client in ./clustervideo (video, frame, drop): frames come as
  * I420 (wantsI420), not as cluster-render's atlas. No upload budget here: the decoder sets the pace.
  *

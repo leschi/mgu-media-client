@@ -8,7 +8,7 @@
  * not the password.
  *
  * Video: the server transcodes to HLS (H.264 + AAC in TS segments) at the size the cluster can take
- * (480x270 fits cluster-render's upload budget, a prior project 0.2.42); our decoder takes H.264 Baseline only,
+ * (480x270 fits cluster-render's upload budget); our decoder takes H.264 Baseline only,
  * so the URL asks for it. The playlist covers the whole video (the server starts transcoding at the
  * segment asked for): a start position is a segment to start at (hls.js startAt).
  * Music: the track's own file where BMW's player plays it (mp3, flac, ogg, wav, aac, m4a), else an mp3.
@@ -24,7 +24,7 @@ const url = require('url');
 const PRODUCT = 'MGU Media Client';
 const VERSION = '0.4.8';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
-// what the car's player plays from a file (a prior project 0.2.37), by Jellyfin's container name
+// what the car's player plays from a file, by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
 // the libraries the app lists (photos, books, live TV are left out)
 const VIEW_KINDS = ['movies', 'tvshows', 'music', 'homevideos', 'musicvideos', 'boxsets', 'playlists', 'mixed', ''];
