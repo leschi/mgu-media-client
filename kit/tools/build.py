@@ -422,21 +422,13 @@ def build(app_id, language='en'):
             shutil.copy(os.path.join(adir, f), os.path.join(src, 'javascript', f))
         elif os.path.isdir(os.path.join(adir, f)):
             # data folders go along as one compressed file, read with kit/runtime/pack.js
-            # (e.g. dtc_scanner/dtc_db, the fault text database -> dtc_db.pack)
             raw, size, _ = pack_data.pack(os.path.join(adir, f), os.path.join(src, 'javascript', f + '.pack'))
             print('  %s/: %.1f MB packed to %.2f MB' % (f, raw / 1e6, size / 1e6))
         elif f.endswith('.pack') and not os.path.isdir(os.path.join(adir, f[:-5])):
-            # a committed pack (e.g. dtc_scanner/dtc_db.pack); a local folder of the same name replaces it
+            # a committed pack; a local folder of the same name replaces it
             shutil.copy(os.path.join(adir, f), os.path.join(src, 'javascript', f))
             print('  %s (committed)' % f)
     # kit runtime
-    if app_id == 'dtc_scanner' and language == 'zh-CN':
-        from build_diagnostic_zh import catalog
-        with tempfile.TemporaryDirectory(prefix='mgu-diagnostic-') as temporary:
-            data = os.path.join(temporary, 'zh-CN.json')
-            with open(data, 'w', encoding='utf-8', newline='\n') as file:
-                json.dump(catalog(), file, ensure_ascii=False, separators=(',', ':'))
-            pack_data.pack(temporary, os.path.join(src, 'javascript', 'diagnostic_i18n.pack'))
     kr = os.path.join(KIT, 'runtime')
     for f in os.listdir(kr):
         p = os.path.join(kr, f)
@@ -445,10 +437,6 @@ def build(app_id, language='en'):
         else:
             shutil.copy(p, os.path.join(src, 'javascript', 'kit', f))
     if language == 'zh-CN':
-        # Diagnostic glyphs are Chinese-only; keep the English runtime atlas intact.
-        if app_id == 'dtc_scanner':
-            shutil.copy(os.path.join(KIT, 'localization', 'fonts', 'diagnostic-zh-CN.json'),
-                        os.path.join(src, 'javascript', 'kit', 'fonts', 'cjk.json'))
         # The translation credit in the installed Chinese entry code, as plain comments.
         entry = os.path.join(src, 'javascript', 'app.js')
         credit = ''.join('// %s\n' % line for line in zh_credit()['comment'])
