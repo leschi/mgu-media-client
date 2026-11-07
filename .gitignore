@@ -16,3 +16,5 @@ apps/media/data/
 apps/media/remotelog-config.js
 apps/media/remotelog-state.json
 tools/.remotelog-cache.json
+__pycache__/
+*.pyc
