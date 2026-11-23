@@ -27,6 +27,7 @@ O=$(mktemp -d "$A/obj.XXXX"); cp -r src/UxPlay/lib "$O/ux"; cp src/mdns/* "$O/ux
 F="-O2 -fPIC -ffunction-sections -fdata-sections -DSTANDALONE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -D_GNU_SOURCE -D_REENTRANT -DNOHOLD -DNOT_HAVE_SA_LEN -DHAVE_LINUX -DUSES_NETLINK -DPLIST_210 -DOPENSSL_API_COMPAT=0x10101000L -I$O/ux -I$O/ux/playfair -I$O/ux/llhttp -Iout/include -fno-sanitize=all -w"
 for c in "$O"/ux/*.c "$O"/ux/playfair/*.c "$O"/ux/llhttp/*.c; do zcc $F -c "$c" -o "$O/$(echo "${c#$O/}" | tr / _).o"; done
 zcc -O2 -fno-sanitize=all -Wall -Wextra -Wno-implicit-fallthrough -I"$O/ux" -Iout/include -c "$HERE/receiver.c" -o "$O/receiver.o"
-zcc -O2 -s -Wl,--gc-sections -o "$HERE/../prebuilt/mgu-airplay" "$O"/*.o -Lout/lib -lavformat -lavcodec -lswresample -lswscale -lavutil -lssl -lcrypto -lplist-2.0 -lpthread -ldl -lm
+# (the unit has its loader in /lib, no /lib64: with the default one the program "is not there", ENOENT)
+zcc -O2 -s -Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-linux-x86-64.so.2 -o "$HERE/../prebuilt/mgu-airplay" "$O"/*.o -Lout/lib -lavformat -lavcodec -lswresample -lswscale -lavutil -lssl -lcrypto -lplist-2.0 -lpthread -ldl -lm
 zig/zig cc -target x86_64-linux-musl -static -O2 -s -fno-sanitize=all -o "$HERE/../prebuilt/mdns-route" "$HERE/mdns_route.c"
 ls -la "$HERE/../prebuilt"

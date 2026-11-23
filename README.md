@@ -6,7 +6,7 @@ A media client app for the BMW MGU head unit (iDrive 7) that plays from your own
   - The picture shows **only while the car is parked**: under 1 km/h and the selector in P. Anything unknown counts as not parked. When you drive off, the picture goes at once.
   - The sound keeps playing through the car's speakers.
 - **Video on the MGU display** too (Settings → *Video on* → MGU display), full screen, the same park check. The frames go to a `/dev/shm` file the GPU renderer reads itself (`shmvideo.js`), so cluster-render's upload limit does not apply there. A touch or the controller shows the page with the title, the time and the tabs for 6 s. If it stays black: Settings → *MGU display video* → Compatible.
-- **Sound of the films**: the own player (tool *Media Client AirPlay* 0.3.0) writes it to BMW's sink; BMW's media player shows title and picture meanwhile. Settings → *Sound of the films* → BMW's media player: as before 0.6.3.
+- **Sound of the films**: BMW's media player, which shows title and picture too. Where it does not play, or with Settings → *Sound of the films* → Own player: the own player (tool *Media Client AirPlay*) writes the sound to BMW's sink.
 - **Pause / play:** the button on the Player page, a press of the controller, or a tap on the picture (MGU display).
 - **Seek (resume too):** turn the controller (±10 s a notch), tilt left / right (±30 s), or tap the progress bar. The video starts again at that point (the server transcodes from there, a few seconds). A video resumes where you last stopped it, here or in another Jellyfin app (Settings → *Resume*).
 - **A buffer on the unit's flash** (Settings → *Video buffer*: 10 minutes by default, about 100 MB): the segments are fetched ahead into the app's data folder and deleted once played and at the end (`buffer.js`). It always leaves 1 GB free on the disk and holds 600 MB at most. Turn off *Throttle transcodes* in Jellyfin (Dashboard → Playback → Transcoding), or the server stops a few minutes ahead.
@@ -76,7 +76,7 @@ The tests also run on Node 8.16, the version on the car. `test/fixtures` holds s
 
 As for waze-on-cluster: the middle is the app's only while the cluster's **Central display area** is set to **Map view** (or Off): Instrument cluster settings. In other views BMW's content keeps it, and the Player page says so. The app keeps one layer for the whole video and hides it when not parked (not dropped and made again), and the layer stays wanted for 30 s without a frame, so a slow segment does not give the middle back to BMW's map.
 
-## Known limits (0.6.4)
+## Known limits (0.6.5)
 
 - **H.264 profile:** If the server sends H.264 Main or High despite the Baseline request, the picture stays empty. Diag then names the profile.
 - **Sound:** BMW's player keeps the length a file had when it opened it, so the sound goes on in a fresh file now and then (a short gap): with the disk buffer every few minutes, with the 15-second buffer about every 10 seconds.

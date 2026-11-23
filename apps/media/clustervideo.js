@@ -408,7 +408,7 @@ class ClusterVideo {
         const dir = this.o.tmp || '/tmp';
         const lead = this.buf ? Math.max(LEAD_NO_BUFFER, Math.min(LEAD_MAX, (this.o.bufferS || 600) - 10)) : LEAD_NO_BUFFER;
         const au = this.audio;
-        if (this.o.air && this.o.air.here()) {
+        if (this.o.ownSound && this.o.air && this.o.air.here()) {
             if (await this._audioOwn(a, sound) || !this.running) return;
             this._event("sound: BMW's player instead");
         }
@@ -447,6 +447,13 @@ class ClusterVideo {
                 const plain = Buffer.concat(Array.from(au.chunks.keys()).sort((x, y) => x - y).map((n) => au.chunks.get(n)));
                 fs.writeFileSync(au.file, plain, { mode: 0o644 });
                 r = await media.play(au.file, 8);
+            }
+            if (!r.playing && this.running && !this.o.ownSound && this.o.air && this.o.air.here()) {
+                this._event('sound: ' + r.answer + ', ' + r.state + '; the own player instead');
+                au.media = null;
+                await media.close().catch(() => {});
+                if (await this._audioOwn(a, sound) || !this.running) return;
+                throw new Error('neither player plays');
             }
             au.state = r.playing ? 'playing' : 'not playing: ' + r.answer + ', ' + r.state;
             this._event('sound: ' + au.state);
