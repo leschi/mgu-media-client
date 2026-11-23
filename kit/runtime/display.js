@@ -802,7 +802,7 @@ class Display {
         o._grow(a.words.length); o.u.set(a.words, 0); o.n = a.words.length;
         a.atlases.forEach((x) => o.atlases.add(x)); a.ramps.forEach((x) => o.ramps.add(x));
         if (a.images) a.images.forEach((x) => o.images.add(x));
-        a.videos.forEach((x) => o.videos.add(x));
+        if (a.videos) a.videos.forEach((x) => o.videos.add(x));
         if (a.layersUsed.size) { o.layersUsed = o.layersUsed || new Set(); a.layersUsed.forEach((x) => o.layersUsed.add(x)); }
         o.chrome = { tabs: a.tabs };
         this._reach(a.reaches);             // (before _drawChrome: its focus marks follow the page)

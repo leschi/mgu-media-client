@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.6.3';
+const VERSION = '0.6.4';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file, by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
