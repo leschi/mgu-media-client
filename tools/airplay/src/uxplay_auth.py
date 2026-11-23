@@ -62,7 +62,7 @@ raop_handler_setup(raop_conn_t *conn,"""),
                     raop->nonce = utils_hex_to_string(nonce, len);
 """, """                    if (!raop->nonce) {
                         int rc = pairing_session_make_nonce(conn->session, &now, url, nonce, len);
-                        assert (!rc);
+                        if (rc) logger_log(raop->logger, LOGGER_ERR, "sign-in: no nonce (%d)", rc);
                         raop->nonce = utils_hex_to_string(nonce, len);
                     }
                     logger_log(raop->logger, LOGGER_INFO, "sign-in: the phone is asked for the code");

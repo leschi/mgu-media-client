@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -837,14 +838,17 @@ static void flush_streams(void)
     atomic_store(&areset, true);
     atomic_store(&offset, 0);
 }
-static void cb_conn_init(void *c) { (void)c; if (atomic_fetch_add(&conns, 1) == 0) say("connected 1"); }
+/* connected: a phone that plays, not one that only knocks (the code stays on the page until then, as bmw-airplay) */
+static atomic_bool sess;
+static void session_up(void) { if (!atomic_exchange(&sess, true)) say("connected 1"); }
+static void cb_conn_init(void *c) { (void)c; atomic_fetch_add(&conns, 1); }
 static void cb_conn_destroy(void *c)
 {
     (void)c;
     if (atomic_fetch_sub(&conns, 1) == 1) {
         flush_streams();
         if (atomic_load(&mode) == 1 || atomic_load(&mode) == 3) { set_mode(0); mg_close(); }
-        say("connected 0");
+        if (atomic_exchange(&sess, false)) say("connected 0");
     }
 }
 static void cb_feedback(void *c) { (void)c; atomic_store(&missed, 0); }
@@ -901,6 +905,7 @@ static void cb_video(void *c, raop_ntp_t *n, video_decode_struct *d)
     (void)c; (void)n;
     if (atomic_load(&mode) == 2) return;
     if (d->is_h265) return;
+    session_up();
     set_mode(1);
     bool key = false;
     for (int i = 0; i + 4 < d->data_len && i < 4096 && !key; i++)
@@ -944,6 +949,7 @@ static void cb_aformat(void *c, unsigned char *ct, unsigned short *spf, bool *sc
 {
     (void)c; (void)spf; (void)media; (void)fmt;
     atomic_store(&aformat, *ct);
+    session_up();
     q_flush(&aq);
     atomic_store(&areset, true);
     if (!*screen && atomic_load(&mode) == 0) set_mode(3);
@@ -961,6 +967,7 @@ static void cb_dacp(void *c, const char *a, const char *b) { (void)c; (void)a; (
 static int cb_codec(void *c, video_codec_t v) { (void)c; atomic_store(&vreset, true); return v == VIDEO_CODEC_H265 ? -1 : 0; }
 static void cb_play(void *c, const char *url, const float start)
 {
+    session_up();
     url_play(url, start);
     cb_video_reset(c, RESET_TYPE_ON_VIDEO_PLAY);
 }
@@ -1257,6 +1264,9 @@ int main(int argc, char **argv)
     for (int i = 0; i < 6; i++) hwb[i] = (char)hw[i];
     prctl(PR_SET_PDEATHSIG, SIGTERM);
     signal(SIGPIPE, SIG_IGN);
+    /* (as bmw-airplay: one byte, so that a crash here is not the head unit's crash handler's) */
+    const struct rlimit core = { 1, 1 };
+    setrlimit(RLIMIT_CORE, &core);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
     struct sigaction ca = { .sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_RESETHAND };
