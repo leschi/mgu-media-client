@@ -15,7 +15,7 @@
  */
 const fs = require('fs');
 const { ClusterRender } = require('./cluster_render_client');
-const { fitRect, parseTargets, TARGETS } = require('./targets');
+const { fitRect, ownRect, parseTargets, TARGETS } = require('./targets');
 const { HlsSource, stripId3 } = require('./hls');
 const { demuxTsAll } = require('./tsdemux');
 const { SegmentBuffer } = require('./buffer');
@@ -37,6 +37,7 @@ const SKIP_NAL = { 6: 1, 9: 1, 12: 1 };   // SEI, access unit delimiter, filler:
 // stuttered (car v0.2.40). 'smooth' takes the stream variant whose atlases fit 85 % of it (480x270);
 // 'sharp' the largest, as before.
 const BUDGET_BPS = 5500 * 1000 * 0.85;
+const RETRY_MS = 5000;                  // a refused layer is asked for again after this
 const STATUS_FILE = '/run/cluster-render/status.txt';
 const SHM_FILE = '/dev/shm/mgu-video-media';       // the MGU display's video (./shmvideo)
 
@@ -61,6 +62,8 @@ class ClusterVideo {
         this.svc = { t: 0, lines: [] };
         this.profile = null;             // the stream's H.264 profile_idc (66 Baseline, 77 Main, 100 High)
         this.refreshT = 0;
+        this.own = false;                // the layer at its frame's size (see _refused)
+        this.refusedWhy = ''; this.retryAt = 0; this.waitWhy = ''; this.waitSince = 0; this.crSince = 0;
         this.paused = false; this.pauseAt = 0;
     }
 
@@ -114,8 +117,13 @@ class ClusterVideo {
     /** what the user must do for the picture to show ('' when nothing): the Player page shows it without Debug on */
     hint() {
         // (as waze-on-cluster: the middle is ours only in the cluster's Map view, or with it off)
-        return this.stockSince && Date.now() - this.stockSince > 8000 ? 'NOT SHOWN: BMW content holds the cluster middle - set Instrument cluster >' +
-            ' Central display area to Map view (or Off), as Waze needs; or choose Whole cluster / HUD' : '';
+        if (this.stockSince && Date.now() - this.stockSince > 8000) return this.target === 'map' ? 'NOT SHOWN: BMW content holds the cluster middle - set Instrument cluster >' +
+            ' Central display area to Map view (or Off), as Waze needs; or choose Whole cluster / HUD' : 'NOT SHOWN: BMW content holds its place - ' + this.waitWhy;
+        if (/video buffers/.test(this.refusedWhy)) return 'NOT SHOWN: other apps hold both video places - in Maps on cluster turn the HUD or the cluster map off';
+        if (this.refusedWhy) return 'NOT SHOWN: Cluster renderer refused it - ' + this.refusedWhy;
+        if (this.crSince && Date.now() - this.crSince > 8000) return 'NOT SHOWN: the Cluster renderer does not answer - is it installed (MGU Store)?';
+        if (this.waitSince && Date.now() - this.waitSince > 8000) return 'NOT SHOWN: Cluster renderer - ' + this.waitWhy;
+        return this.own && this.layer ? 'Small picture: other apps hold both video places - in Maps on cluster turn the HUD or the cluster map off' : '';
     }
 
     /**
@@ -183,11 +191,18 @@ class ClusterVideo {
                 // BMW's own content in the slot (the map area: the cluster's own view) - since when, for the hint
                 if (/behind stock|parked/.test(reason || '') && state === 'waiting') { if (!this.stockSince) this.stockSince = Date.now(); }
                 else if (state === 'shown') this.stockSince = 0;
+                this.waitWhy = state + (reason ? ' (' + reason + ')' : '');
+                this.refusedWhy = '';              // (an event of it: the service took it)
+                if (/^(shown|hidden|stalled)$/.test(state)) this.waitSince = 0;
+                else if (!this.waitSince) this.waitSince = Date.now();
                 // (the same two states come every few seconds while the slot is retried: logged once)
                 const ev = 'layer ' + state + (reason ? ' (' + reason + ')' : '');
                 if (ev !== this.lastLayerEv) { this.lastLayerEv = ev; this._event(ev); }
             });
-            on('refused', (op, ref, reason) => { if (!ref || ref === this.layer) this._event('refused ' + op + ': ' + reason); });
+            on('refused', (op, ref, reason) => {
+                if (op === 'layer' && ref && ref === this.layer) this._refused(reason);
+                else if (op !== 'frame' && (!ref || ref === this.layer)) this._event('refused ' + op + ': ' + reason);
+            });
             on('budget', (cap, max, reason) => { this.budget = 'upload cap ' + cap + ' KB/s' + (reason ? ' (' + reason + ')' : ''); this._event(this.budget); });
             this.cr.connect();
             this.state = 'buffering';
@@ -224,15 +239,37 @@ class ClusterVideo {
     _targetSize() { return (this.cr && parseTargets(this.cr.targets)[this.target]) || TARGETS[this.target] || [1600, 520]; }
 
     _show(w, h) {
-        if (this.layer || !this.cr || !this.cr.ready) return;
+        if (this.layer || !this.cr) return;
+        if (!this.cr.ready) { if (!this.crSince) this.crSince = Date.now(); return; }
+        this.crSince = 0;
+        if (Date.now() < this.retryAt) return;
         const sz = this._targetSize();
-        this.rect = fitRect(w, h, sz[0], sz[1]);
+        this.rect = (this.own && ownRect(w, h, sz[0], sz[1])) || fitRect(w, h, sz[0], sz[1]);
         // stall_ms: a layer without a frame for that long un-wants the target, which gives the middle back
         // to BMW's map and starts the take-over again (flicker): 30 s rides out a slow segment (waze: 60 s)
-        this.layer = this.cr.video(Object.assign({ target: this.target, klass: 'content', contend: 1, vw: w, vh: h, fps: 30, stall_ms: 30000 }, this.rect));
+        // z: over the map's own video (of one z the newer layer is on top: the map's, made again, hid this one)
+        // others_fps (cluster-render 0.8.0): while this is shown the other apps' videos (the map) are written
+        // 15 times a second at most, so the upload budget goes to this one
+        this.layer = this.cr.video(Object.assign({ target: this.target, klass: 'content', z: 100, contend: 1, vw: w, vh: h, fps: 30, stall_ms: 30000 },
+            this.cr.othersFps ? { others_fps: 15 } : {}, this.rect));
         this.atlas = Buffer.alloc(w * h * 3 / 2);
         this.showing = !!this.layer;
         this._event(this.layer ? 'layer ' + w + 'x' + h + ' on ' + this.target : 'layer refused by the client');
+    }
+
+    /**
+     * The service refused the layer. The display holds two videos; Maps on cluster keeps one for the
+     * cluster and one for the HUD, hidden ones too. Past two only videos at their frame's size (w x h =
+     * vw x vh, even x and y) share a buffer: so this one is asked for at its own size, small but shown.
+     * Refused like that too, or for any other reason: asked for again every few seconds.
+     */
+    _refused(reason) {
+        const vb = /video buffers/.test(reason || ''), was = this.own;
+        this._event('refused layer' + (was ? ' (own size)' : '') + ': ' + reason);
+        this.refusedWhy = String(reason || 'no reason given');
+        this._hide();
+        this.own = vb ? !was : false;
+        this.retryAt = vb && !was ? 0 : Date.now() + RETRY_MS;
     }
 
     _hide() {

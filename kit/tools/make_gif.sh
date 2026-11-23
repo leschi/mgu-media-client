@@ -24,7 +24,7 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$root/kit/renderd/build:/b" -v "$tmp:
     /lib64/ld-linux-x86-64.so.2 /b/mgu-renderd --replay /o/s.bin --out /o/last.pam --raw /o/s.rgba
 total=$(( $(stat -c %s "$tmp/s.rgba") / (1920 * 720 * 4) )); skip=$(( total - sec * 60 ))
 if [ -n "$BG" ]; then bg=(-loop 1 -i "$BG"); else bg=(-f lavfi -i color=black:s=1920x720); fi
-ffmpeg -v error -y "${bg[@]}" -f rawvideo -pix_fmt rgba -s 1920x720 -r 60 -i "$tmp/s.rgba" -filter_commedia \
+ffmpeg -v error -y "${bg[@]}" -f rawvideo -pix_fmt rgba -s 1920x720 -r 60 -i "$tmp/s.rgba" -filter_complex \
     "[1:v]trim=start_frame=$skip,setpts=PTS-STARTPTS[a];[0:v][a]overlay=0:0:shortest=1,fps=50,scale=1280:-1:flags=lanczos,split[x][y];[x]palettegen=stats_mode=diff:max_colors=220[p];[y][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle" \
     "$out"
 echo "$out: $sec s, $(( $(stat -c %s "$out") / 1024 )) KiB"

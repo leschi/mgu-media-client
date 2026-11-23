@@ -190,6 +190,33 @@ test('ClusterVideo: the picture follows the player\'s time (sound ahead -> the c
     assert.strictEqual(v.clock0, c);
 });
 
+test('ClusterVideo: both video buffers taken -> the picture at its own size; refused otherwise -> the reason, asked again', async () => {
+    const client = fakeClient();
+    const files = { 'http://x/v.m3u8': '#EXTM3U\n#EXTINF:1.0,\ns0.ts\n', 'http://x/s0.ts': SEG[0] };
+    const v = new ClusterVideo({ url: 'http://x/v.m3u8', target: 'hud', client, get: (u) => Promise.resolve(Buffer.from(files[u])), gate: { parked: () => true, why: () => 'P' } });
+    await v.start();
+    await new Promise((r) => setTimeout(r, 300));
+    const ref = v.layer;
+    assert.deepStrictEqual([client.layers.get(ref).w, client.layers.get(ref).z], [640, 100]);
+    client.emit('refused', 'layer', ref, 'too many video buffers on the display (at most 2): ...');
+    client.emit('refused', 'frame', ref, 'no such layer');
+    assert.deepStrictEqual([v.layer, client.dropped], [0, [ref]]);
+    v._show(64, 48);
+    const lo = client.layers.get(v.layer);
+    assert.deepStrictEqual([lo.x, lo.y, lo.w, lo.h, lo.vw, lo.vh], [368, 216, 64, 48, 64, 48], 'its own size, even x and y');
+    client.emit('layer', v.layer, 'shown', '');
+    assert.ok(/^Small picture.* - /.test(v.hint()), v.hint());
+    const own = v.layer;
+    client.emit('refused', 'layer', own, "the service's pixel memory is full");
+    v._show(64, 48);
+    assert.strictEqual(v.layer, 0, 'not asked for again at once');
+    assert.ok(/^NOT SHOWN: .* - the service's pixel memory is full/.test(v.hint()), v.hint());
+    v.retryAt = 0;
+    v._show(64, 48);
+    assert.strictEqual(client.layers.get(v.layer).w, 640, 'full size again');
+    v.stop();
+});
+
 test('ClusterVideo: BMW content keeps the slot -> a hint on Diag after 8 s, logged once', async () => {
     const client = fakeClient();
     const files = { 'http://x/v.m3u8': '#EXTM3U\n#EXTINF:1.0,\ns0.ts\n', 'http://x/s0.ts': SEG[0] };

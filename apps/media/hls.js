@@ -37,7 +37,7 @@ function get(u, opts, hops) {
 }
 
 /** a URL for the log: without its token */
-function hide(u) { return String(u).replace(/(api_?key|X-Media-Token|token)=[^&]+/gi, '$1=...'); }
+function hide(u) { return String(u).replace(/(api_?key|token)=[^&]+/gi, '$1=...'); }
 
 function attrs(s) {
     const out = {};

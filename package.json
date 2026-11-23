@@ -1,6 +1,6 @@
 {
   "name": "mgu-media-client",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "private": true,
   "description": "A media client for the BMW MGU head unit (iDrive 7): video from a Jellyfin server on the instrument cluster or the HUD while parked, sound through BMW's media player",
   "license": "MIT",

@@ -3,7 +3,7 @@
  * targets.js - cluster-render's targets and fitting a picture into one.
  */
 // map = the area between the gauges (takes over the stock content with contend), panel = the whole
-// cluster, hud. panel and hud share a scene id: never both at once. The service's hello names the real
+// cluster, hud. The service's hello names the real
 // sizes (iDrive 8: others).
 const TARGETS = { map: [1088, 480], panel: [1920, 720], hud: [800, 480] };
 
@@ -20,4 +20,13 @@ function fitRect(iw, ih, tw, th) {
     return { x: Math.floor((tw - w) / 2), y: Math.floor((th - h) / 2), w, h };
 }
 
-module.exports = { TARGETS, parseTargets, fitRect };
+/**
+ * The picture at its own size, centred, at even x and y (cluster-render: only such videos share the
+ * display's two video buffers); null when it is larger than the target.
+ */
+function ownRect(iw, ih, tw, th) {
+    if (iw > tw || ih > th) return null;
+    return { x: ((tw - iw) >> 1) & ~1, y: ((th - ih) >> 1) & ~1, w: iw, h: ih };
+}
+
+module.exports = { TARGETS, parseTargets, fitRect, ownRect };
