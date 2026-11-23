@@ -7,6 +7,7 @@ require('./buffer.test');
 require('./player.test');
 require('./remote.test');
 require('./parkgate.test');
+require('./airplay.test');
 
 const { runAll } = require('./_harness');
 runAll().then((failures) => process.exit(failures ? 1 : 0));

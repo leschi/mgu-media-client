@@ -1,0 +1,24 @@
+[Unit]
+Description=Media Client AirPlay receiver
+After=persistency-fs.target alsaroutingadapters.service mdnsd.service mgu-uplink.service
+Wants=persistency-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /var/opt/mgu-media-airplay/current/launch.js
+ExecStopPost=/usr/bin/node /var/opt/mgu-media-airplay/current/launch.js remove
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+# the video is decoded in software
+CPUAccounting=yes
+CPUShares=1024
+MemoryAccounting=yes
+MemoryLimit=1G
+TasksMax=256
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

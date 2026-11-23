@@ -29,6 +29,7 @@ const png = require('./png');
 const { Jellyfin } = require('./jellyfin');
 const { ClusterVideo } = require('./clustervideo');
 const { ClusterRender } = require('./cluster_render_client');
+const { AirPlay, AirPlayVideo } = require('./airplay');
 const { MusicPlayer } = require('./musicplayer');
 const { Remote } = require('./remote');
 const { RemoteLog } = require('./remotelog');
@@ -36,8 +37,8 @@ const { lookup, resolved: dnsResolved } = require('./dns');
 
 const W = 1600, H = 520;
 // (Diag only with Settings -> Debug on)
-const TABS_ALL = ['Server', 'Browse', 'Player', 'Diag'];
-const PAGES_ALL = ['server', 'browse', 'player', 'diag'];
+const TABS_ALL = ['Server', 'Browse', 'Player', 'AirPlay', 'Diag'];
+const PAGES_ALL = ['server', 'browse', 'player', 'air', 'diag'];
 const ROWS = 8, ROW_H = 52, LIST_Y = 92;
 const PIC = { x: W - 330, w: 290, h: 410 };       // the picture of the chosen item, right of the list
 const TARGET_NAME = { map: 'Cluster middle', panel: 'Whole cluster', hud: 'Head-up display', cid: 'MGU display' };
@@ -47,7 +48,7 @@ mgu.run({
     async start(ctx) {
         const { ui, settings } = ctx;
         const debug = () => settings.get('debug') === true;
-        const PAGES = () => (debug() ? PAGES_ALL : PAGES_ALL.slice(0, 3));
+        const PAGES = () => (debug() ? PAGES_ALL : PAGES_ALL.slice(0, 4));
         const TABS = () => TABS_ALL.slice(0, PAGES().length);
         const dataDir = ctx.dataDir;
 
@@ -338,6 +339,7 @@ mgu.run({
         }
 
         async function playVideo(it, at, queue) {
+            await airOff();
             await stopAll();
             playing = it;
             vq = queue || null;
@@ -378,6 +380,7 @@ mgu.run({
         }
 
         async function playMusic(items, i) {
+            await airOff();
             await stopAll();
             const tracks = items.filter((x) => x.audio);
             const start = tracks.indexOf(items[i]);
@@ -398,6 +401,47 @@ mgu.run({
             if (!mrep) { mrep = { id: t.id, ps: crypto.randomBytes(8).toString('hex'), ms }; jf.report('start', { id: t.id, playSessionId: mrep.ps, timeMs: ms, method: 'DirectPlay' }); }
             else { mrep.ms = ms; jf.report('progress', { id: t.id, playSessionId: mrep.ps, timeMs: ms, paused: m.paused, method: 'DirectPlay' }); }
         }
+
+        /* ================= AirPlay (./airplay: the receiver is a process of its own) ================= */
+        const air = new AirPlay(path.join(dataDir, 'airplay', 'control.sock'));
+        let airVideo = null, airSound = null, airMedia = false;
+        // a video the car fetches itself (YouTube) is made to this size
+        const airSize = () => (settings.get('target') === 'cid' ? [1280, 720] : settings.get('quality') === 'sharp' ? [640, 360] : [480, 270]);
+        const airFull = () => page === 'air' && !!(airVideo && airVideo.screen());
+        /** the app's source on the speakers while AirPlay plays (one change at a time) */
+        let airChain = Promise.resolve();
+        function airAudio(on) {
+            airChain = airChain.then(async () => {
+                if (on && !airSound && air.active()) airSound = await require('./oapmedia').connectSource(sig, (l) => log.info(l));
+                else if (!on && airSound) { const s = airSound; airSound = null; await s.release(); }
+            }).catch((e) => log.warn('AirPlay sound: ' + e.message));
+            return airChain;
+        }
+        async function airPicture() {
+            const v = airVideo;
+            airVideo = null;
+            if (v) await v.stop();
+            if (!air.active()) return;
+            const target = settings.get('target') || 'map';
+            airVideo = new AirPlayVideo({ target, gate, air, log, client: target === 'cid' ? undefined : clusterClient(), quality: settings.get('quality') });
+            airVideo.start();
+        }
+        function airOn() { const s = airSize(); air.start(s[0], s[1]); airPicture(); }
+        async function airOff() {
+            if (!air.active()) return;
+            air.stop();
+            airMedia = false;
+            await airPicture();
+            await airAudio(false);
+        }
+        air.on('state', (st) => {
+            const media = air.active() && !!(st.frame || (st.mode === 'audio' && st.phase === 'playing') || st.mode === 'video');
+            if (media && !airMedia) { airMedia = true; stopAll().then(() => airAudio(true)); playing = null; vq = null; }
+            else if (!media && airMedia && !st.connected) { airMedia = false; airAudio(false); }
+            buttons(); touch();
+        });
+        air.connect();
+        setInterval(() => { if (page === 'air') touch(); }, 3000);      // (what the service says)
 
         const isPaused = () => !!((video && video.paused) || (music && music.paused));
         function togglePause() {
@@ -492,6 +536,7 @@ mgu.run({
                 jf.token = ''; jf.userId = ''; stack = []; status = 'Signed out'; setPage('server');
             }
             if (k === 'debug' && !debug() && page === 'diag') setPage('player');
+            if ((k === 'target' || k === 'quality') && air.active()) { const s = airSize(); air.viewport(s[0], s[1]); airPicture(); }
             if ((k === 'target' || k === 'quality' || k === 'buffer') && video && playing && !playing.audio) {
                 playVideo(playing, where(), vq);
             }
@@ -503,6 +548,7 @@ mgu.run({
             server: () => [['BTN1', srvMode === 'quick' ? 'New code' : 'Quick Connect'], ['BTN2', srvMode === 'form' ? 'Sign in' : 'Enter by hand']],
             browse: () => [['BTN1', 'Open / Play'], ['BTN2', 'Back']],
             player: () => [['BTN1', isPaused() ? 'Play' : 'Pause'], ['BTN2', 'Stop']],
+            air: () => [['BTN1', air.active() ? 'Disconnect' : 'Connect'], ['BTN2', air.state.mode === 'video' ? 'End video' : '-']],
             diag: () => [['BTN1', 'Clear log'], ['BTN2', 'Back to browse']],
         };
         function buttons() { BTN[page]().forEach(([n, l]) => { try { ui.text(n, l); } catch (e) { /* ignore */ } }); }
@@ -514,6 +560,7 @@ mgu.run({
             if (page === 'server') quickConnect();
             else if (page === 'browse') choose();
             else if (page === 'player') togglePause();
+            else if (page === 'air') { if (air.active()) airOff().then(() => { buttons(); touch(); }); else if (!air.missing()) airOn(); }
             else if (page === 'diag') ring.length = 0;
             buttons(); touch();
         });
@@ -521,6 +568,7 @@ mgu.run({
             if (page === 'server') { if (srvMode === 'form') signInPassword(); else { stopQuick(); srvMode = 'form'; field = conf.base ? 'user' : 'url'; status = 'Server address (http://IP:8096), then Quick Connect - or user and password'; } }
             else if (page === 'browse') back();
             else if (page === 'player') { stopAll(); playing = null; vq = null; status = ''; }
+            else if (page === 'air') { if (air.state.mode === 'video') air.endVideo(); }
             else if (page === 'diag') setPage('browse');
             buttons(); touch();
         });
@@ -533,6 +581,9 @@ mgu.run({
                 if (!c) return;
                 const i = c.top + Math.floor((y - LIST_Y) / ROW_H);
                 if (y >= LIST_Y && i >= 0 && i < c.items.length && i < c.top + ROWS) { if (c.sel === i) choose(); else { c.sel = i; touch(); } }
+            } else if (airFull()) {
+                overlayUntil = Date.now() + 5000; touch();         // (the tabs for 5 s)
+                setTimeout(touch, 5100);
             } else if (fullScreen()) {
                 // full screen: a tap shows title, time and tabs; while they show, the bar seeks and elsewhere pauses
                 if (overlay()) { if (!seekBarHit(x, y, 40, H - 60, W - 80)) togglePause(); }
@@ -672,12 +723,13 @@ mgu.run({
         function drawScreen(cv, t, scr) {
             cv.fillRect(0, 0, W, H, '#000000');
             if (!videoGpu() || typeof cv.video !== 'function') { cv.text('Connecting the video to the screen...', W / 2, H / 2, 22, '#ffffff', { align: 'center', literal: true }); return; }
-            const key = scr.file + scr.w + 'x' + scr.h;
-            if (vidDecl !== key) { setVideo(VID, scr.file, scr.w, scr.h); vidDecl = key; }
+            const g = videoGpu(), key = scr.file + scr.w + 'x' + scr.h + (scr.gen || '');
+            // (a file made anew under its name: named to the renderer again)
+            if (vidDecl !== key) { setVideo(VID, scr.file, scr.w, scr.h); if (g.sent && g.sent.video) g.sent.video.delete(VID); vidDecl = key; }
             // fitted into the whole page, proportions kept
             const s = Math.min(W / scr.w, H / scr.h), w = Math.round(scr.w * s), h = Math.round(scr.h * s);
             cv.video(VID, Math.round((W - w) / 2), Math.round((H - h) / 2), w, h, 0);
-            if (!overlay()) return;
+            if (!overlay() || !playing) return;
             cv.fillRect(0, H - 120, W, 120, withAlpha('#000000', 0.7));
             cv.text(playing.title + (playing.sub ? '  -  ' + playing.sub : ''), 40, H - 82, 24, '#ffffff', { font: 'bold', literal: true });
             const pos = shownPos(), dur = playing.duration / 1000;
@@ -730,6 +782,26 @@ mgu.run({
                 say('Press the controller: pause / play. Turn or tilt: previous / next track. Plays while driving too.', 480, 18, t.dim);
             } else say(status, 120, 22, t.dim);
         }
+        function drawAir(cv, t) {
+            const scr = airVideo && airVideo.screen(), st = air.state;
+            if (scr) { drawScreen(cv, t, scr); return; }
+            header(cv, t, 'AirPlay from an iPhone, iPad or Mac');
+            const miss = air.missing(), say = (str, y, size, col) => cv.text(str, 40, y, size, col, lit);
+            if (miss) { wrap(miss, 100).forEach((l, i) => say(l, 130 + i * 34, 22, i ? t.dim : t.warn || t.accent)); return; }
+            if (!air.active()) { say('Press Connect, then choose BMW MGU on the phone: Control Centre -> Screen Mirroring, or the AirPlay sign in YouTube.', 130, 20, t.text); return; }
+            say(st.mode === 'audio' ? 'Music plays' : st.frame ? (gate.parked() ? 'Playing on: ' + TARGET_NAME[settings.get('target') || 'map'] : 'Picture only while parked (P) - the sound goes on')
+                : st.phase === 'loading' ? 'The video loads...' : st.phase === 'restarting' ? 'The receiver starts again...' : st.connected ? 'The phone is connected' : 'Ready - choose BMW MGU on the phone', 130, 24, t.text);
+            if (st.code && !st.connected) {
+                say('The phone asks for this code:', 190, 22, t.dim);
+                cv.text(st.code, 40, 300, 96, t.text, { font: 'bold', spacing: 12, literal: true });
+            }
+            if (st.error) say(st.error, 356, 20, t.warn || t.accent);
+            const hint = airVideo && airVideo.hint();
+            if (hint) { say(hint.slice(0, hint.indexOf(' - ') + 1), 420, 18, t.warn || t.accent); say(hint.slice(hint.indexOf(' - ') + 3), 446, 18, t.warn || t.accent); }
+            if (debug() && airVideo) airVideo.events.slice(-3).forEach((l, i) => say(l.slice(0, 130), 474 + i * 20, 15, t.dim));
+            else say('The phone in the car\'s WLAN or in the same hotspot as the car. YouTube needs the car\'s internet. Protected streams (Netflix ...) do not play.', 506, 17, t.dim);
+        }
+        const wrap = (str, n) => str.split(' ').reduce((L, word) => { const l = L[L.length - 1]; if (l && (l + ' ' + word).length <= n) L[L.length - 1] = l + ' ' + word; else L.push(word); return L; }, []);
         const fmtAhead = (sec) => Math.floor(sec / 60) + ':' + ('0' + Math.floor(sec % 60)).slice(-2);
         const two = (n) => (n < 10 ? '0' : '') + n;
         const fmt = (s) => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + ':' + two(Math.floor(s / 60) % 60) + ':' + two(s % 60); };
@@ -749,13 +821,14 @@ mgu.run({
             drawn = rev;
             const t = ctx.theme();
             // the MGU display's video: IterioDev's dialect while it plays there (see useDialect)
-            useDialect(video && video.target === 'cid' ? 'iterio' : '');
+            useDialect((video && video.target === 'cid') || (airVideo && airVideo.screen()) ? 'iterio' : '');
             const cv = ctx.canvas(W, H).clear(t.bg);
             // (a page that fails to draw must not stop the tabs and the screen: it says so instead)
             try {
                 if (page === 'server') drawServer(cv, t);
                 else if (page === 'browse') drawBrowse(cv, t);
                 else if (page === 'player') drawPlayer(cv, t);
+                else if (page === 'air') drawAir(cv, t);
                 else drawDiag(cv, t);
             } catch (e) {
                 if (!drawErr) log.error('draw ' + page + ': ' + (e && e.stack || e));
@@ -766,7 +839,7 @@ mgu.run({
                 cv.fillRect(W - 760, 92, 720, 56, withAlpha('#000000', 0.8));
                 cv.text(notice.text.slice(0, 64), W - 740, 128, 22, '#ffffff', lit);
             }
-            if (!fullScreen() || overlay()) G.frame(cv, t, TABS(), PAGES().indexOf(page), [video && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
+            if (!(fullScreen() || airFull()) || overlay()) G.frame(cv, t, TABS(), PAGES().indexOf(page), [(video || (airVideo && air.state.frame)) && !gate.parked() && { text: 'NOT PARKED' }, (video || music) && { text: isPaused() ? 'PAUSED' : 'PLAYING' }]);
             return ui.image('MAIN_GFX', cv);
         }
         ctx.loop('MAIN', 4, render);

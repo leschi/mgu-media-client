@@ -178,33 +178,7 @@ class ClusterVideo {
             }
             this._event('playlist: ' + (v.width + 'x' + v.height) + ' ' + v.codecs + ', ' + v.segs.length + ' segments' + (v.ended ? '' : ' so far') +
                 (this.src.audio ? ', sound ' + this.src.audio.segs.length : ', sound in the segments') + (this.src.warn ? '; ' + this.src.warn : ''));
-            this.cr = this.o.client || (this.target === 'cid' ? new ShmVideo(this.o.shmFile || SHM_FILE)
-                : new ClusterRender(this.o.app || 'mgu_vnc', this.o.socketPath || process.env.CLUSTER_RENDER_SOCKET));
-            // (a reconnect: the client sends its layers again itself - ours stays ours; a new one would
-            // leave the old one stalled, and cluster-render takes 2 video layers in all). The handlers go
-            // at stop: a client shared by the app's videos (o.client) outlives this one
-            const on = (ev, fn) => { this.cr.on(ev, fn); this.crOff.push(() => this.cr && this.cr.removeListener && this.cr.removeListener(ev, fn)); };
-            this.crOff = [];
-            on('ready', () => this._event('cluster-render connected'));
-            on('layer', (ref, state, reason) => {
-                if (ref !== this.layer) return;
-                // BMW's own content in the slot (the map area: the cluster's own view) - since when, for the hint
-                if (/behind stock|parked/.test(reason || '') && state === 'waiting') { if (!this.stockSince) this.stockSince = Date.now(); }
-                else if (state === 'shown') this.stockSince = 0;
-                this.waitWhy = state + (reason ? ' (' + reason + ')' : '');
-                this.refusedWhy = '';              // (an event of it: the service took it)
-                if (/^(shown|hidden|stalled)$/.test(state)) this.waitSince = 0;
-                else if (!this.waitSince) this.waitSince = Date.now();
-                // (the same two states come every few seconds while the slot is retried: logged once)
-                const ev = 'layer ' + state + (reason ? ' (' + reason + ')' : '');
-                if (ev !== this.lastLayerEv) { this.lastLayerEv = ev; this._event(ev); }
-            });
-            on('refused', (op, ref, reason) => {
-                if (op === 'layer' && ref && ref === this.layer) this._refused(reason);
-                else if (op !== 'frame' && (!ref || ref === this.layer)) this._event('refused ' + op + ': ' + reason);
-            });
-            on('budget', (cap, max, reason) => { this.budget = 'upload cap ' + cap + ' KB/s' + (reason ? ' (' + reason + ')' : ''); this._event(this.budget); });
-            this.cr.connect();
+            this._wire();
             this.state = 'buffering';
             this.audioWait = Date.now() + 15000;
             this._audioStart();
@@ -214,6 +188,37 @@ class ClusterVideo {
             this._event(this.state);
             this.stop();
         }
+    }
+
+    /** the renderer's connection and what it says of this video's layer */
+    _wire() {
+        this.cr = this.o.client || (this.target === 'cid' ? new ShmVideo(this.o.shmFile || SHM_FILE)
+            : new ClusterRender(this.o.app || 'mgu_vnc', this.o.socketPath || process.env.CLUSTER_RENDER_SOCKET));
+        // (a reconnect: the client sends its layers again itself - ours stays ours; a new one would
+        // leave the old one stalled, and cluster-render takes 2 video layers in all). The handlers go
+        // at stop: a client shared by the app's videos (o.client) outlives this one
+        const on = (ev, fn) => { this.cr.on(ev, fn); this.crOff.push(() => this.cr && this.cr.removeListener && this.cr.removeListener(ev, fn)); };
+        this.crOff = [];
+        on('ready', () => this._event('cluster-render connected'));
+        on('layer', (ref, state, reason) => {
+            if (ref !== this.layer) return;
+            // BMW's own content in the slot (the map area: the cluster's own view) - since when, for the hint
+            if (/behind stock|parked/.test(reason || '') && state === 'waiting') { if (!this.stockSince) this.stockSince = Date.now(); }
+            else if (state === 'shown') this.stockSince = 0;
+            this.waitWhy = state + (reason ? ' (' + reason + ')' : '');
+            this.refusedWhy = '';              // (an event of it: the service took it)
+            if (/^(shown|hidden|stalled)$/.test(state)) this.waitSince = 0;
+            else if (!this.waitSince) this.waitSince = Date.now();
+            // (the same two states come every few seconds while the slot is retried: logged once)
+            const ev = 'layer ' + state + (reason ? ' (' + reason + ')' : '');
+            if (ev !== this.lastLayerEv) { this.lastLayerEv = ev; this._event(ev); }
+        });
+        on('refused', (op, ref, reason) => {
+            if (op === 'layer' && ref && ref === this.layer) this._refused(reason);
+            else if (op !== 'frame' && (!ref || ref === this.layer)) this._event('refused ' + op + ': ' + reason);
+        });
+        on('budget', (cap, max, reason) => { this.budget = 'upload cap ' + cap + ' KB/s' + (reason ? ' (' + reason + ')' : ''); this._event(this.budget); });
+        this.cr.connect();
     }
 
     /** resolves once the sound is off and the AudioManager connection gone (the next user of it waits) */

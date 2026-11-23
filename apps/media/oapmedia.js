@@ -29,10 +29,10 @@ function waitAvailable(sig, px, ms) {
 }
 
 /**
- * opts.scale: times scale for the waits (the tests run fast). Throws when the AudioManager or the player
- * isn't there; then nothing was connected.
+ * The AudioManager connection alone: the app's source on the media sink -> { release() ... }. Throws when the
+ * AudioManager or the source isn't there.
  */
-async function openMedia(sig, add, opts) {
+async function connectSource(sig, add, opts) {
     const scale = opts && opts.scale != null ? opts.scale : 1;
     const w = (ms) => wait(ms * scale);
     const call = (px, m, a, ms) => withTimeout(sig.call(px, m, a || {}, ms || 8000), (ms || 8000) + 2000, m);
@@ -48,7 +48,6 @@ async function openMedia(sig, add, opts) {
     const conn = r && r.mainConnectionID;
     add('am: ' + (prev ? 'source ' + prev.sourceID + ' was on sink ' + sinkId + '; ' : '') + 'connect ' + src.sourceID + ' -> ' + sinkId + ': ' + oneLine(JSON.stringify(r), 60));
 
-    const m = { sig, call, prev, sinkId, conn, closed: false };
     const release = async () => {
         if (conn == null) return;
         await w(1000);
@@ -59,6 +58,16 @@ async function openMedia(sig, add, opts) {
             : call(am, 'connect', { sourceID: prev.sourceID, sinkID: sinkId }).then((y) => add('am restore source ' + prev.sourceID + ': ' + oneLine(JSON.stringify(y), 60)))))
             .catch((e) => add('am restore: ' + e.message));
     };
+    return { am, call, w, prev, sinkId, conn, release };
+}
+
+/**
+ * opts.scale: times scale for the waits (the tests run fast). Throws when the AudioManager or the player
+ * isn't there; then nothing was connected.
+ */
+async function openMedia(sig, add, opts) {
+    const { call, w, prev, sinkId, conn, release } = await connectSource(sig, add, opts);
+    const m = { sig, call, prev, sinkId, conn, closed: false };
     try {
         m.mp = await withTimeout(sig.proxy(MP, 'OapGenericMedia'), 8000, 'proxy MP');
         await waitAvailable(sig, m.mp, 10000);
@@ -88,4 +97,4 @@ async function openMedia(sig, add, opts) {
     return m;
 }
 
-module.exports = { openMedia, waitAvailable, withTimeout, oneLine };
+module.exports = { openMedia, connectSource, waitAvailable, withTimeout, oneLine };

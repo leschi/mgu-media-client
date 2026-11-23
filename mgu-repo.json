@@ -12,5 +12,8 @@
       "sdk": "oap-sdk",
       "output": "dist/{id}@{version}.tgz"
     }
-  }
+  },
+  "tools": [
+    { "id": "mgu-media-airplay", "path": "tools/airplay" }
+  ]
 }

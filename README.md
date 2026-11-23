@@ -15,6 +15,7 @@ A media client app for the BMW MGU head unit (iDrive 7) that plays from your own
   - The car plays it. The phone shows where it is and can pause, seek, stop and skip to the next episode or track.
   - The phone is only the remote: the car gets the video from your server as when chosen in the car. So the phone needs no WLAN with the car, and the park check applies the same.
   - While you are signed in, the app keeps a WebSocket to the server for this (`remote.js`, `websocket.js`).
+- **AirPlay** (iPhone, iPad, Mac; the AirPlay page): screen mirroring, YouTube's AirPlay button and music. Press *Connect*, choose *BMW MGU* on the phone and enter the code shown. The picture goes where *Video on* says, only while parked; the sound goes on. It needs the optional tool *Media Client AirPlay* of this repository (`tools/airplay`: its own receiver, about 9 MB). Protected streams do not play; of the apps that hand over a video by its address only YouTube does (UxPlay's limit). Not tried on a car yet.
 - **Sign in.** Type the server's address with the on-screen keyboard (`http://192.168.x.x:8096`, or your https address; port 8096 is added to a plain http address). Then either:
   - **Quick Connect:** the app shows a code. You enter it in a signed-in Jellyfin app or the web page (your profile → *Quick Connect*). No password is typed in the car. Quick Connect must be on in the server's dashboard (*General → Quick Connect*).
   - **User name and password** with the on-screen keyboard.
@@ -74,7 +75,7 @@ The tests also run on Node 8.16, the version on the car. `test/fixtures` holds s
 
 As for waze-on-cluster: the middle is the app's only while the cluster's **Central display area** is set to **Map view** (or Off): Instrument cluster settings. In other views BMW's content keeps it, and the Player page says so. The app keeps one layer for the whole video and hides it when not parked (not dropped and made again), and the layer stays wanted for 30 s without a frame, so a slow segment does not give the middle back to BMW's map.
 
-## Known limits (0.5.0)
+## Known limits (0.6.0)
 
 - **H.264 profile:** If the server sends H.264 Main or High despite the Baseline request, the picture stays empty. Diag then names the profile.
 - **Sound:** BMW's player keeps the length a file had when it opened it, so the sound goes on in a fresh file now and then (a short gap): with the disk buffer every few minutes, with the 15-second buffer about every 10 seconds.

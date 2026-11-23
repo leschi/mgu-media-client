@@ -1,0 +1,15 @@
+mgu-airplay (src/receiver.c): GPL-3.0-or-later, see LICENSE. Statically linked into it (src/build.sh has the exact versions):
+
+UxPlay lib/        https://github.com/FDH2/UxPlay  commit df67c212a433cf6dda3676dd40c097900d24e645
+                   LGPL-2.1-or-later (files by Juho Vaha-Herttua) and GPL-3.0 (the rest); llhttp: MIT
+FFmpeg 7.1.1       https://ffmpeg.org  LGPL-3.0-or-later (built with --enable-version3, without GPL parts)
+OpenSSL 3.0.15     https://openssl.org  Apache-2.0
+libplist 2.6.0     https://github.com/libimobiledevice/libplist  LGPL-2.1-or-later
+mDNSResponder      https://github.com/apple-oss-distributions/mDNSResponder  commit 67390998bac34f1e203b0ad7fea72f7e2063066e
+ (client stub)     BSD-3-Clause, (c) Apple Inc.: Redistribution and use in source and binary forms, with or without
+                   modification, are permitted provided that the conditions in those files' headers are met.
+
+mdns-route (src/mdns_route.c), launch.js, network.js: GPL-3.0-or-later, after https://github.com/pllanaio/bmw-airplay
+(C) 2026 Leon Pllana IT-Solutions.
+
+The complete corresponding source: src/, and the archives src/build.sh fetches.

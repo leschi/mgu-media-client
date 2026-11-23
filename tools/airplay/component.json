@@ -1,0 +1,22 @@
+{
+  "id": "mgu-media-airplay",
+  "kind": "tool",
+  "version": "0.2.0",
+  "title": "Media Client AirPlay",
+  "description": "The AirPlay receiver of Media Client (screen mirroring, YouTube, music from an iPhone, iPad or Mac)",
+  "mguHmi": ["ID7"],
+  "optional": true,
+  "uninstallable": true,
+  "requires": { "mgu-deploy": "0.7.17" },
+  "files": [
+    { "path": "mgu-airplay", "from": "prebuilt/mgu-airplay", "mode": "0755" },
+    { "path": "mdns-route", "from": "prebuilt/mdns-route", "mode": "0755" },
+    { "path": "launch.js", "from": "launch.js", "mode": "0644" },
+    { "path": "network.js", "from": "network.js", "mode": "0644" },
+    { "path": "LICENSE", "from": "LICENSE", "mode": "0644" },
+    { "path": "LICENSES.txt", "from": "LICENSES.txt", "mode": "0644" }
+  ],
+  "units": [{ "name": "mgu-media-airplay.service", "from": "mgu-media-airplay.service" }],
+  "enable": [{ "unit": "mgu-media-airplay.service", "target": "multi-user.target" }],
+  "restart": ["mgu-media-airplay.service"]
+}
