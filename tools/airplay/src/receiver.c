@@ -1310,10 +1310,11 @@ int main(int argc, char **argv)
                 raop_set_port(raop, p2);
             } else if (drop && !keep) raop_remove_known_connections(raop);
         }
-        /* a phone that went without a word (its WLAN): 15 s without its heartbeat */
+        /* a phone that went without a word (its WLAN): 15 s without its heartbeat (it beats while it plays, not
+         * while somebody types the code: that took longer, and the code was asked for again) */
         if (now_ns() - tick > 1000 * MS) {
             tick = now_ns();
-            if (!atomic_load(&conns) || atomic_load(&mode) == 2) atomic_store(&missed, 0);
+            if (!atomic_load(&conns) || atomic_load(&mode) == 2 || atomic_load(&mode) == 0) atomic_store(&missed, 0);
             else if (atomic_fetch_add(&missed, 1) > 15) { atomic_store(&missed, 0); atomic_store(&reset_http, true); atomic_store(&do_reset, true); }
         }
     }

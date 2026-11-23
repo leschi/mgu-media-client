@@ -24,9 +24,10 @@ chmod +x bin/*; export PATH=$A/bin:$PATH
   --enable-decoder=h264,hevc,aac,alac,mp3 --enable-parser=h264,hevc,aac,mpegaudio --enable-demuxer=hls,mpegts,mov,aac,mp3,h264 --enable-protocol=http,https,tcp,tls,crypto,file,data --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb \
   --extra-cflags="-I$A/out/include -O2" --extra-ldflags="-L$A/out/lib" --extra-libs="-lpthread -ldl -lm" && sed -i 's/#define HAVE_SYSCTL 1/#define HAVE_SYSCTL 0/' config.h && make -j8 && make install)
 O=$(mktemp -d "$A/obj.XXXX"); cp -r src/UxPlay/lib "$O/ux"; cp src/mdns/* "$O/ux/"
-F="-O2 -fPIC -ffunction-sections -fdata-sections -DSTANDALONE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -D_GNU_SOURCE -D_REENTRANT -DNOHOLD -DNOT_HAVE_SA_LEN -DHAVE_LINUX -DUSES_NETLINK -DPLIST_210 -DOPENSSL_API_COMPAT=0x10101000L -I$O/ux -I$O/ux/playfair -I$O/ux/llhttp -Iout/include -fno-sanitize=all -w"
+# (-UNDEBUG: zig drops asserts at -O2, and UxPlay makes the password's nonce inside one: it was all zeros)
+F="-O2 -UNDEBUG -fPIC -ffunction-sections -fdata-sections -DSTANDALONE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -D_GNU_SOURCE -D_REENTRANT -DNOHOLD -DNOT_HAVE_SA_LEN -DHAVE_LINUX -DUSES_NETLINK -DPLIST_210 -DOPENSSL_API_COMPAT=0x10101000L -I$O/ux -I$O/ux/playfair -I$O/ux/llhttp -Iout/include -ffile-prefix-map=$A=. -fno-sanitize=all -w"
 for c in "$O"/ux/*.c "$O"/ux/playfair/*.c "$O"/ux/llhttp/*.c; do zcc $F -c "$c" -o "$O/$(echo "${c#$O/}" | tr / _).o"; done
-zcc -O2 -fno-sanitize=all -Wall -Wextra -Wno-implicit-fallthrough -I"$O/ux" -Iout/include -c "$HERE/receiver.c" -o "$O/receiver.o"
+zcc -O2 -fno-sanitize=all -UNDEBUG -Wall -Wextra -Wno-implicit-fallthrough -I"$O/ux" -Iout/include -c "$HERE/receiver.c" -o "$O/receiver.o"
 # (the unit has its loader in /lib, no /lib64: with the default one the program "is not there", ENOENT)
 zcc -O2 -s -Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-linux-x86-64.so.2 -o "$HERE/../prebuilt/mgu-airplay" "$O"/*.o -Lout/lib -lavformat -lavcodec -lswresample -lswscale -lavutil -lssl -lcrypto -lplist-2.0 -lpthread -ldl -lm
 zig/zig cc -target x86_64-linux-musl -static -O2 -s -fno-sanitize=all -o "$HERE/../prebuilt/mdns-route" "$HERE/mdns_route.c"
