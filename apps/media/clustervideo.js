@@ -142,6 +142,13 @@ class ClusterVideo {
         return this.state + ', ' + v.segs.length + ' segments';
     }
 
+    /** why the film has no sound ('' when it has, or is still starting) */
+    soundProblem() {
+        const a = this.audio;
+        if (/^(error|not playing|stopped by)/.test(a.state)) return a.state;
+        return a.problem || '';
+    }
+
     /** Diag lines */
     lines() {
         const s = this.stats, v = this.src && this.src.video;
@@ -405,7 +412,9 @@ class ClusterVideo {
             au.state = 'fetching';
             au.chunks = new Map();              // segment -> its sound (from the file's first segment on)
             au.nameIdx = 0; au.file = dir + '/' + AUDIO_NAMES[0]; au.first = 0; au.base = 0;
-            fs.writeFileSync(au.file, Buffer.alloc(0), { mode: 0o644 }); fs.chmodSync(au.file, 0o644);
+            // title and cover for BMW's media display, in front of the sound (./id3); what is not there in time is left out
+            au.tag = await Promise.race([Promise.resolve(this.o.tag).catch(() => null), new Promise((r2) => setTimeout(() => r2(null), 5000))]) || Buffer.alloc(0);
+            fs.writeFileSync(au.file, au.tag, { mode: 0o644 }); fs.chmodSync(au.file, 0o644);
             let i = 0;
             const more = async () => {
                 const k = i;
@@ -427,7 +436,14 @@ class ClusterVideo {
             const media = await require('./oapmedia').openMedia(sig, (l) => this._event(l));
             if (!this.running) { media.close(); return; }
             au.media = media;
-            const r = await media.play(au.file, 8);
+            let r = await media.play(au.file, 8);
+            if (!r.playing && au.tag.length && this.running) {
+                this._event('sound: ' + r.state + ' with title and cover, again without');
+                au.tag = Buffer.alloc(0);
+                const plain = Buffer.concat(Array.from(au.chunks.keys()).sort((x, y) => x - y).map((n) => au.chunks.get(n)));
+                fs.writeFileSync(au.file, plain, { mode: 0o644 });
+                r = await media.play(au.file, 8);
+            }
             au.state = r.playing ? 'playing' : 'not playing: ' + r.answer + ', ' + r.state;
             this._event('sound: ' + au.state);
             if (r.playing && this.queue.length && !this.clock0) this.clock0 = Date.now();
@@ -442,6 +458,7 @@ class ClusterVideo {
                     const fileEndMs = (soundS() - au.base) * 1000;
                     if (e && tot && !this.paused && !au.pending && +tot[1] - +e[1] < 3500 && fileEndMs > +tot[1] + 3000) this._rotate(a, +e[1], at, dir);
                 });
+                media.problem().then((x) => { if (x && x !== au.problem) this._event('sound: ' + x); au.problem = x; }, () => {});
                 media.get('playerState').then((x) => { au.state = /PLAY"/.test(x) ? 'playing' : this.paused ? 'paused' : 'stopped by the player: ' + x; });
                 return undefined;
             }, 2000);
@@ -466,7 +483,7 @@ class ClusterVideo {
         const pos = au.base + elapsedMs / 1000;
         let k = au.first;
         while (k + 1 < au.segs && a.segs[k + 1].t <= pos) k++;
-        const parts = [];
+        const parts = au.tag ? [au.tag] : [];
         for (let j = k; j < au.segs; j++) if (au.chunks.has(j)) parts.push(au.chunks.get(j));
         const old = au.file;
         au.nameIdx = 1 - au.nameIdx;

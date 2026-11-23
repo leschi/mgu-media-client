@@ -356,6 +356,10 @@ class Display {
         const down = (x) => x === 1 || x === 2;
         const press = down(pb) && !(L && down(L.pb));
         const tilt = TILT[df] && !(L && TILT[L.df] === TILT[df]) ? TILT[df] : null;
+        if (this.presentation) {
+            if ((d || press || tilt) && this.onPresentationInput) this.onPresentationInput(press ? 'press' : 'move');
+            return;
+        }
         const tl = this._tabList(), here = Math.max(0, tl.sel >= 0 ? tl.sel : tl.settings);
         if (this.sheet) {
             // pushed up: the header's tabs (the knob along them, press opens one); pushed down: back to the sheet
@@ -448,6 +452,10 @@ class Display {
      * running the screen also on a bar button (pressed), a sheet's targets, or the page (ctx.onTap).
      */
     _touch(phase, x, y) {
+        if (this.presentation) {
+            if (phase === 3 && this.onPresentationInput) this.onPresentationInput('touch');
+            return;
+        }
         const inside = (r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
         // the app takes a whole gesture (ctx.onTouch: a dial or a slider under the finger): every move goes to it, and no
         // tap, scroll or target follows from it
@@ -521,6 +529,7 @@ class Display {
     /** The tabs of the frame just sent (rects in logical px, or in the surface's for the header). */
     _claimTabs(rects, r) {
         const pl = this.place;
+        if (this.presentation) { this.tabs = []; this.gpu.claim([{ x: 0, y: 0, w: pl.w, h: pl.h }]); return; }
         const logical = (q) => (r ? q : { i: q.i, x: (q.x - pl.ox) / pl.scale, y: (q.y - pl.oy) / pl.scale, w: q.w / pl.scale, h: q.h / pl.scale });
         this.tabs = (rects || []).map(logical);
         const W = pl.w, hx = HMI.left - pl.x, by = pl.h - this.barH();
@@ -567,6 +576,21 @@ class Display {
         (this.screen.buttons || []).forEach((b) => { if (this.ui.visible) this.ui.visible(b[0], !hide); });
     }
 
+    /**
+     * The whole screen for the app's frame (a video): no title strip, tabs or bar, the frame in screen pixels. Only
+     * the placement's scale changes, so nothing is uploaded again and the connection stays. Any touch or turn of the
+     * controller goes to onPresentationInput (the app ends it then). Only where the kit runs the screen.
+     */
+    setPresentation(on) {
+        on = !!on && !!(this.gpu && this.gpu.ready && this.gpu.native && this.gpu.screen);
+        if (on === !!this.presentation) return on;
+        this.presentation = on;
+        this.tabs = []; this.ownDown = null; this.downAt = null; this.tabDown = -1; this.dragging = false;
+        this._place();
+        if (on) this._claimTabs(null, null);
+        return on;
+    }
+
     layout() {
         const v = this.settings.get('layout') || 'full';
         return LAYOUTS.indexOf(v) >= 0 ? v : 'full';
@@ -585,7 +609,9 @@ class Display {
         HMI = geometryFor(scr);
         let pl;
         // iDrive 8 has only the full layout (no HMI page box of iDrive 7's size to sit in)
-        if ((v === 'standard' && HMI === HMI7) || scr.w !== HMI.screen.w || scr.h !== HMI.screen.h) {
+        if (this.presentation && this.gpu.native) {
+            pl = { x: 0, y: 0, w: scr.w, h: scr.h, scale: 1, ox: 0, oy: 0, full: true };
+        } else if ((v === 'standard' && HMI === HMI7) || scr.w !== HMI.screen.w || scr.h !== HMI.screen.h) {
             pl = { x: HMI7.img.x, y: HMI7.img.y, w: HMI7.img.w, h: HMI7.img.h, scale: 1, ox: 0, oy: 0, full: false };
         } else {
             // iDrive 7: the surface covers the whole screen, so the HMI's own bar can't show under the back
@@ -686,7 +712,7 @@ class Display {
         r.reset();
         r.tabRects = null;
         // full-screen layout: G.frame hands its tabs to the header instead of drawing them
-        r.chrome = this.active() && this.place.full && this.screen.chrome !== false ? { tabs: null } : null;
+        r.chrome = !this.presentation && this.active() && this.place.full && this.screen.chrome !== false ? { tabs: null } : null;
         // where the frame lands on screen (apps that draw some parts in screen pixels, r.xf)
         r.place = this.active() ? this.place : null;
         // the kit runs the screen: buttons drawn on the page (G.button) take the place of the bar's
@@ -708,14 +734,14 @@ class Display {
         if (this.sheet && this.active() && this.place.full) {
             if (r.chrome) this.saved = Object.assign({}, this.saved || {}, {
                 name, softImage, w: r.w, h: r.h, textScale: r.textScale, words: new Uint32Array(r.words()),
-                atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []), tabs: r.chrome.tabs,
+                atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []), videos: new Set(r.videos || []), tabs: r.chrome.tabs,
                 reaches: r.extraUsed,
             });
             return Promise.resolve();
         }
         // Standard/software layout: keep the rightmost 96 px free for the DEMO badge.
         // Full-screen GPU layout draws it below the native status strip in _drawChrome.
-        if (!(r.chrome && this.active() && this.place.full) && !r._cnStamped) {
+        if (!this.presentation && !(r.chrome && this.active() && this.place.full) && !r._cnStamped) {
             r.xf().noclip();
             drawCredit(r, r.w - 96, 25);
             r._cnStamped = true;
@@ -728,7 +754,7 @@ class Display {
                 // keep the app's own part: the display redraws the header and bar over it by itself
                 this.app = {
                     name, softImage, w: r.w, h: r.h, textScale: r.textScale, words: new Uint32Array(r.words()),
-                    atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []), tabs: r.chrome.tabs,
+                    atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []), videos: new Set(r.videos || []), tabs: r.chrome.tabs,
                     reaches: r.extraUsed,
                 };
                 out = this._compose();
@@ -776,6 +802,7 @@ class Display {
         o._grow(a.words.length); o.u.set(a.words, 0); o.n = a.words.length;
         a.atlases.forEach((x) => o.atlases.add(x)); a.ramps.forEach((x) => o.ramps.add(x));
         if (a.images) a.images.forEach((x) => o.images.add(x));
+        a.videos.forEach((x) => o.videos.add(x));
         if (a.layersUsed.size) { o.layersUsed = o.layersUsed || new Set(); a.layersUsed.forEach((x) => o.layersUsed.add(x)); }
         o.chrome = { tabs: a.tabs };
         this._reach(a.reaches);             // (before _drawChrome: its focus marks follow the page)
@@ -798,7 +825,7 @@ class Display {
         const words = new Uint32Array(r.words());
         this.last = {
             name, softImage, w: r.w, h: r.h,
-            frame: { words: () => words, atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []) },
+            frame: { words: () => words, atlases: new Set(r.atlases), ramps: new Set(r.ramps), layersUsed: new Set(r.layersUsed || []), images: new Set(r.images || []), videos: new Set(r.videos || []) },
         };
         if (!this.keepTimer) {
             this.keepTimer = setInterval(() => {

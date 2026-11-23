@@ -219,7 +219,7 @@ test('tsdemux: a muxed segment (a server transcode) gives the picture and the AA
 });
 
 /** BMW's player as the music player sees it: a track plays for `len` ms (scaled), then stops */
-function fakeSig(lenMs) {
+function fakeSig(lenMs, conns) {
     const calls = [];
     const st = { t0: 0, playing: false, path: '' };
     const elapsed = () => (st.playing ? Math.min(lenMs, Date.now() - st.t0) : 0);
@@ -232,7 +232,10 @@ function fakeSig(lenMs) {
             calls.push(m + (a && a.path ? ' ' + path.basename(a.path) : ''));
             if (m === 'getListMainSources') return Promise.resolve({ l: [{ sourceID: 1046, name: 'OAPGenericMedia' }] });
             if (m === 'getListMainSinks') return Promise.resolve({ l: [{ sinkID: 1024, name: 'MediaSink_Front' }] });
-            if (m === 'getListMainConnections') return Promise.resolve({ l: [] });
+            if (m === 'getListMainConnections') return Promise.resolve({ l: (conns || []).slice() });
+            if (m === 'disconnect' && conns) { const i = conns.findIndex((c) => c.mainConnectionID === a.mainConnectionID); if (i >= 0) conns.splice(i, 1); }
+            if (m === 'connect' && (conns || []).some((c) => c.sourceID === a.sourceID)) return Promise.resolve({ mainConnectionID: 0, amError: 'E_ALREADY_EXISTS' });
+            if (m === 'connect' && conns) conns.push({ mainConnectionID: 7, sourceID: a.sourceID, sinkID: a.sinkID, connectionState: 'CS_CONNECTED' });
             if (m === 'connect') return Promise.resolve({ mainConnectionID: 7, amError: 'E_OK' });
             if (m === 'playFile') { Object.assign(st, { t0: Date.now(), playing: true, path: a.path }); return Promise.resolve({ EntError: 'OK' }); }
             if (m === 'sendButtonEvent' && a.button === 'PAUSE') st.playing = false;
@@ -241,6 +244,33 @@ function fakeSig(lenMs) {
     };
     return { sig, calls };
 }
+
+test('oapmedia: a connection an earlier run left is ended first; the radio before comes back, not our own', async () => {
+    const { connectSource } = require('../apps/media/oapmedia');
+    const conns = [{ mainConnectionID: 3, sourceID: 1046, sinkID: 1024, connectionState: 'CS_SUSPENDED' }, { mainConnectionID: 4, sourceID: 55, sinkID: 1024, connectionState: 'CS_SUSPENDED' }];
+    const f = fakeSig(1000, conns), log = [];
+    const c = await connectSource(f.sig, (l) => log.push(l), { scale: 0.01 });
+    assert.deepStrictEqual([c.conn, c.prev.sourceID], [7, 55]);
+    assert.deepStrictEqual(conns.map((x) => x.mainConnectionID), [4, 7]);
+    assert.strictEqual(await c.problem(), '');
+    conns[1].connectionState = 'CS_SUSPENDED';
+    assert.ok(/CS_SUSPENDED/.test(await c.problem()));
+    await c.release();
+    assert.deepStrictEqual(conns.map((x) => x.mainConnectionID), [4]);
+});
+
+test('id3: title, artist and cover as BMW\'s player reads them', () => {
+    const { id3 } = require('../apps/media/id3');
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(300, 7)]);
+    const b = id3({ title: 'Müller', artist: 'S1E2', jpeg });
+    assert.strictEqual(b.toString('latin1', 0, 3), 'ID3');
+    assert.strictEqual((b[6] << 21 | b[7] << 14 | b[8] << 7 | b[9]) + 10, b.length);
+    const at = b.indexOf('TIT2');
+    assert.strictEqual(b.slice(at + 13, at + 10 + b.readUInt32BE(at + 4)).toString('utf16le'), 'Müller');
+    assert.ok(b.indexOf(jpeg) > 0);
+    assert.strictEqual(id3({}).length, 0);
+    assert.strictEqual(id3({ title: 'x', jpeg: Buffer.from('<html>') }).indexOf('APIC'), -1);
+});
 
 test('MusicPlayer: each track fetched to a file (named by the server\'s kind), played, the next one at the end; files go', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mgu-music-'));

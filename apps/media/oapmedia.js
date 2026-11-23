@@ -43,9 +43,22 @@ async function connectSource(sig, add, opts) {
     const snk = arr(lists[1]).find((x) => /mediasink.?front/i.test(x.name)) || arr(lists[1]).find((x) => /media/i.test(x.name));
     if (!src || !snk) throw new Error('no OAPGenericMedia source or media sink');
     const sinkId = snk.sinkID;
-    const prev = arr(lists[2]).find((c) => c.sinkID === sinkId) || null;
-    const r = await call(am, 'connect', { sourceID: src.sourceID, sinkID: sinkId });
-    const conn = r && r.mainConnectionID;
+    // a connection of this source already there: one a killed run left, or another app's (it is every OAP app's
+    // source). The AudioManager refuses a second one and the film plays to nobody: it goes first
+    const own = arr(lists[2]).filter((c) => c.sinkID === sinkId && c.sourceID === src.sourceID);
+    for (const c of own) {
+        await call(am, 'disconnect', { mainConnectionID: c.mainConnectionID }).then((x) => add('am: old connection ' + c.mainConnectionID + ' (' + c.connectionState + ') ended: ' + oneLine(JSON.stringify(x), 40)), (e) => add('am: old connection: ' + e.message));
+        await w(500);
+    }
+    const prev = arr(lists[2]).find((c) => c.sinkID === sinkId && c.sourceID !== src.sourceID) || null;
+    const good = (x) => !!x && (x.amError === undefined || x.amError === 'E_OK' || x.amError === 0);
+    let r = await call(am, 'connect', { sourceID: src.sourceID, sinkID: sinkId });
+    if (!good(r)) {
+        add('am: connect ' + oneLine(JSON.stringify(r), 60) + ', again');
+        await w(1500);
+        r = await call(am, 'connect', { sourceID: src.sourceID, sinkID: sinkId });
+    }
+    const conn = good(r) ? r.mainConnectionID : null;
     add('am: ' + (prev ? 'source ' + prev.sourceID + ' was on sink ' + sinkId + '; ' : '') + 'connect ' + src.sourceID + ' -> ' + sinkId + ': ' + oneLine(JSON.stringify(r), 60));
 
     const release = async () => {
@@ -58,7 +71,13 @@ async function connectSource(sig, add, opts) {
             : call(am, 'connect', { sourceID: prev.sourceID, sinkID: sinkId }).then((y) => add('am restore source ' + prev.sourceID + ': ' + oneLine(JSON.stringify(y), 60)))))
             .catch((e) => add('am restore: ' + e.message));
     };
-    return { am, call, w, prev, sinkId, conn, release };
+    /** why nothing can be heard ('' when the connection stands) */
+    const problem = async () => {
+        if (conn == null) return 'the car gives no sound connection (' + (r && r.amError) + ')';
+        const c = arr(await call(am, 'getListMainConnections')).find((x) => x.mainConnectionID === conn);
+        return c && c.connectionState !== undefined && c.connectionState !== 'CS_CONNECTED' && c.connectionState !== 2 ? 'the car holds the sound (' + c.connectionState + ')' : '';
+    };
+    return { am, call, w, prev, sinkId, conn, release, problem };
 }
 
 /**
@@ -66,8 +85,8 @@ async function connectSource(sig, add, opts) {
  * isn't there; then nothing was connected.
  */
 async function openMedia(sig, add, opts) {
-    const { call, w, prev, sinkId, conn, release } = await connectSource(sig, add, opts);
-    const m = { sig, call, prev, sinkId, conn, closed: false };
+    const { call, w, prev, sinkId, conn, release, problem } = await connectSource(sig, add, opts);
+    const m = { sig, call, prev, sinkId, conn, problem, closed: false };
     try {
         m.mp = await withTimeout(sig.proxy(MP, 'OapGenericMedia'), 8000, 'proxy MP');
         await waitAvailable(sig, m.mp, 10000);

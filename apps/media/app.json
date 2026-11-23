@@ -2,7 +2,7 @@
   "id": "media",
   "title": "Media Client",
   "description": "Videos and music from your Jellyfin server: video on the instrument cluster (middle or whole) or the HUD - the picture only while parked, the sound through the car's speakers also while driving. Enter the server's address, then sign in with Quick Connect (a code in your Jellyfin app) or user name and password.",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "vendor": "custom",
   "loggingId": "OAMC",
   "iconGlyph": "MC",
@@ -61,6 +61,16 @@
       ]
     },
     {
+      "key": "cidMode",
+      "label": "MGU display video",
+      "type": "choice",
+      "default": "native",
+      "options": [
+        ["native", "Full screen (normal)"],
+        ["compat", "Compatible (as before 0.6.2)"]
+      ]
+    },
+    {
       "key": "quality",
       "label": "Video quality",
       "type": "choice",
@@ -84,6 +94,12 @@
     {
       "key": "resume",
       "label": "Resume videos where you stopped",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "nowPlaying",
+      "label": "Title and picture for BMW's media display",
       "type": "bool",
       "default": true
     },

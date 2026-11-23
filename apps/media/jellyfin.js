@@ -22,7 +22,7 @@ const https = require('https');
 const url = require('url');
 
 const PRODUCT = 'MGU Media Client';
-const VERSION = '0.6.0';
+const VERSION = '0.6.2';
 const TICKS = 10000;                  // Jellyfin's ticks: 100 ns, 10000 per ms
 // what the car's player plays from a file, by Jellyfin's container name
 const AUDIO_OK = [[/^mp3$/, 'mp3'], [/^flac$/, 'flac'], [/^wav$/, 'wav'], [/^aac$/, 'aac'], [/^ogg$/, 'ogg', /vorbis/], [/m4a|mp4/, 'm4a', /^aac$/]];
@@ -217,6 +217,14 @@ class Jellyfin {
         const r = await this.req('GET', this.base + '/Items/' + id + '/Images/Primary?' + qs({ maxWidth: w, maxHeight: h, format: 'Png', ApiKey: this.token }),
             { headers: this.streamHeaders(), lookup: this.lookup, timeout: 15000 });
         if (r.status !== 200) throw new Error('picture: http ' + r.status);
+        return r.body;
+    }
+
+    /** an item's picture as a small JPEG (the cover in BMW's media display) */
+    async cover(id) {
+        const r = await this.req('GET', this.base + '/Items/' + id + '/Images/Primary?' + qs({ maxWidth: 400, maxHeight: 400, quality: 80, format: 'Jpg', ApiKey: this.token }),
+            { headers: this.streamHeaders(), lookup: this.lookup, timeout: 5000 });
+        if (r.status !== 200) throw new Error('cover: http ' + r.status);
         return r.body;
     }
 
