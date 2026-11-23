@@ -37,6 +37,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include <libavcodec/avcodec.h>
@@ -991,9 +992,12 @@ static void cb_info(void *c, playback_info_t *i)
     if (atomic_load(&pl.finished)) { i->duration = -1.0; i->position = -1.0; }
     pthread_mutex_unlock(&pl.mx);
 }
+/* the library's log for the AirPlay page, what one line says; not what comes many times a second */
 static void cb_log(void *c, int level, const char *msg)
 {
     (void)c;
+    if (level <= LOGGER_INFO && !strstr(msg, "raop_rtp_mirror") && !strstr(msg, "nonce mismatch") && msg[0]) say("log %.100s", msg);
+    if (strstr(msg, "nonce mismatch")) say("log the sign-in is an old one");
     if (level <= LOGGER_ERR || getenv("MGU_AIRPLAY_LOG")) fprintf(stderr, "%d %s\n", level, msg);
 }
 
@@ -1082,6 +1086,29 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
         return real(s, service, &h, res);
     }
     return EAI_AGAIN;
+}
+
+/* ---------------- a crash: where (the module and the offset in it) ---------------- */
+static void on_crash(int sig, siginfo_t *si, void *uc)
+{
+    (void)si;
+    unsigned long ip = (unsigned long)((ucontext_t *)uc)->uc_mcontext.gregs[16 /* RIP */];
+    char l[512], out[200];
+    const char *name = "?";
+    unsigned long off = ip;
+    FILE *m = fopen("/proc/self/maps", "r");
+    while (m && fgets(l, sizeof l, m)) {
+        unsigned long a, b, o;
+        if (sscanf(l, "%lx-%lx %*s %lx", &a, &b, &o) != 3 || ip < a || ip >= b) continue;
+        l[strcspn(l, "\n")] = 0;
+        name = strrchr(l, '/') ? strrchr(l, '/') + 1 : "?";
+        off = ip - a + o;
+        break;
+    }
+    const int n = snprintf(out, sizeof out, "log crash: signal %d in %.60s +0x%lx\n", sig, name, off);
+    if (write(1, out, n) < 0) { /* gone */ }
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 /* ---------------- main ---------------- */
@@ -1232,6 +1259,12 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+    struct sigaction ca = { .sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_RESETHAND };
+    sigaction(SIGSEGV, &ca, NULL);
+    sigaction(SIGABRT, &ca, NULL);
+    sigaction(SIGFPE, &ca, NULL);
+    sigaction(SIGILL, &ca, NULL);
+    sigaction(SIGBUS, &ca, NULL);
     srand((unsigned)now_ns());
     av_log_set_level(getenv("MGU_AIRPLAY_LOG") ? AV_LOG_INFO : AV_LOG_QUIET);
     avformat_network_init();
@@ -1255,7 +1288,7 @@ int main(int argc, char **argv)
     raop = raop_init(&cb);
     if (!raop) return 1;
     raop_set_log_callback(raop, cb_log, NULL);
-    raop_set_log_level(raop, getenv("MGU_AIRPLAY_LOG") ? LOGGER_DEBUG : LOGGER_ERR);
+    raop_set_log_level(raop, getenv("MGU_AIRPLAY_LOG") ? LOGGER_DEBUG : LOGGER_INFO);
     if (raop_init2(raop, 1 /* a new phone takes over */, mac, key)) { say("error the receiver does not start"); return 1; }
     raop_set_plist(raop, "width", 1280);
     raop_set_plist(raop, "height", 720);

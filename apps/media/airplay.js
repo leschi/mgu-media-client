@@ -18,7 +18,7 @@ const { ClusterVideo } = require('./clustervideo');
 const { i420ToAtlas } = require('./h264dec');
 
 const STATUS = '/run/mgu-media-airplay/status.json';
-const OFF = { phase: 'off', mode: '', connected: false, code: '', file: '', frame: null, error: '' };
+const OFF = { phase: 'off', mode: '', connected: false, code: '', file: '', frame: null, error: '', log: [] };
 const FILE = /^\/dev\/shm\/mgu-video-airplay-[\w-]+$/;
 
 class AirPlay extends EventEmitter {
@@ -56,7 +56,8 @@ class AirPlay extends EventEmitter {
     _set(st) {
         const f = st.frame && st.frame.w >= 16 && st.frame.h >= 16 && FILE.test(st.file) ? st.frame : null;
         const was = JSON.stringify(this.state);
-        this.state = { phase: String(st.phase), mode: String(st.mode || ''), connected: !!st.connected, code: String(st.code || ''), file: f ? st.file : '', frame: f, error: String(st.error || '') };
+        this.state = { phase: String(st.phase), mode: String(st.mode || ''), connected: !!st.connected, code: String(st.code || ''), file: f ? st.file : '', frame: f, error: String(st.error || ''),
+            log: (Array.isArray(st.log) ? st.log : []).slice(-7).map((l) => String(l).slice(0, 120)) };
         if (JSON.stringify(this.state) !== was) this.emit('state', this.state);
     }
     _send(o) { if (this.sock && !this.sock.connecting) this.sock.write(JSON.stringify(o) + '\n'); }

@@ -810,6 +810,7 @@ mgu.run({
             const hint = airVideo && airVideo.hint();
             if (hint) { say(hint.slice(0, hint.indexOf(' - ') + 1), 420, 18, t.warn || t.accent); say(hint.slice(hint.indexOf(' - ') + 3), 446, 18, t.warn || t.accent); }
             if (debug() && airVideo) airVideo.events.slice(-3).forEach((l, i) => say(l.slice(0, 130), 474 + i * 20, 15, t.dim));
+            else if (!hint && st.log.length > 1) st.log.slice(-6).forEach((l, i) => say(l, 384 + i * 20, 15, t.dim));
             else say('The phone in the car\'s WLAN or in the same hotspot as the car. YouTube needs the car\'s internet. Protected streams (Netflix ...) do not play.', 506, 17, t.dim);
         }
         const wrap = (str, n) => str.split(' ').reduce((L, word) => { const l = L[L.length - 1]; if (l && (l + ' ' + word).length <= n) L[L.length - 1] = l + ' ' + word; else L.push(word); return L; }, []);

@@ -33,12 +33,15 @@ function online() {
 }
 
 /* ---------------- the state the app sees ---------------- */
-const state = { phase: 'stopped', mode: '', connected: false, code: '', file: '', frame: null, error: '' };
+const state = { phase: 'stopped', mode: '', connected: false, code: '', file: '', frame: null, error: '', log: [] };
 let client = null, beat = 0, graceT = null;
 function update(o) {
     Object.assign(state, o);
     if (client && !client.destroyed && client.bufferSize < 32768) client.write(JSON.stringify({ state }) + '\n');
 }
+
+/** what the receiver did last (the AirPlay page shows it while nothing plays) */
+function note(l) { state.log = state.log.concat(new Date().toTimeString().slice(0, 8) + ' ' + String(l).replace(/[^\x20-\x7e]/g, '').slice(0, 110)).slice(-7); update({}); }
 
 /* ---------------- frames ---------------- */
 function frameOf(file) {
@@ -79,7 +82,8 @@ function hideOld() { const f = state.file && frameOf(state.file); oldFrame = f ?
 function line(l) {
     const m = /^(\w+) ?(.*)$/.exec(l);
     if (!m) return;
-    if (m[1] === 'connected') update({ connected: m[2] === '1' });
+    if (m[1] === 'log') note(m[2]);
+    else if (m[1] === 'connected') update({ connected: m[2] === '1' });
     else if (m[1] === 'mode') {
         hideOld();
         if (m[2] === 'none') update({ mode: '', phase: 'waiting', frame: null });
@@ -125,6 +129,7 @@ function run(keepCode) {
         if (child === c) child = null;
         try { fs.unlinkSync(file); } catch (e) { /* gone with it */ }
         if (!wanted) return;
+        note(why);
         if (Date.now() - t0 > 60000) fails = 0;
         update({ phase: 'restarting', mode: '', connected: false, frame: null, file: '', error: why });
         restartT = setTimeout(() => run(true), RESTART_MS[Math.min(fails++, RESTART_MS.length - 1)]);
