@@ -370,7 +370,7 @@ mgu.run({
             // what BMW's media display shows: the title, the series or year, the poster
             const tag = settings.get('nowPlaying') === false ? null : (it.img ? jf.cover(it.img).catch((e) => { log.warn(e.message); return null; }) : Promise.resolve(null))
                 .then((jpeg) => id3({ title: it.title, artist: it.sub, album: it.sub, jpeg: jpeg && jpeg.length < 200000 ? jpeg : null }));
-            video = new ClusterVideo({ url, tag, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
+            video = new ClusterVideo({ url, tag, air: settings.get('sound') === 'bmw' ? null : air, client: target === 'cid' ? undefined : clusterClient(), headers: jf.streamHeaders(), startAt: from, bufferDir: bufS > 15 ? BUF_DIR : null, bufferS: bufS, target, gate, sig, lookup, log, app: 'mgu_media', quality: sharp ? 'sharp' : 'smooth', anyProfile: true });
             log.info('video ' + it.title + ' from ' + Math.round(from) + ' s on ' + (settings.get('target') || 'map'));
             video.start();
             jf.report('start', Object.assign({ timeMs: from * 1000 }, p));

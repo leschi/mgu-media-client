@@ -41,7 +41,7 @@ class AirPlay extends EventEmitter {
             if (buf.length > 32768) { s.destroy(); return; }
             let i;
             while ((i = buf.indexOf('\n')) >= 0) {
-                try { const m = JSON.parse(buf.slice(0, i)); if (m && m.state) this._set(m.state); } catch (e) { /* not ours */ }
+                try { const m = JSON.parse(buf.slice(0, i)); if (m && m.state) this._set(m.state); else if (m && m.sound) this.emit('sound', m.sound); } catch (e) { /* not ours */ }
                 buf = buf.slice(i + 1);
             }
         });
@@ -65,6 +65,9 @@ class AirPlay extends EventEmitter {
     start(w, h) { this.on_ = true; this.size = { w, h }; this._start(); }
     /** the size of a video the car fetches itself (YouTube) */
     viewport(w, h) { this.size = { w, h }; this._send({ command: 'viewport', w, h }); }
+    /** the receiver's process is there (it plays a film's sound too: ./ownsound) */
+    here() { return !!this.sock && this.state.phase !== 'off'; }
+    sound(op, o) { this._send(Object.assign({ command: 'sound', op }, o)); }
     endVideo() { this._send({ command: 'endVideo' }); }
     stop() { this.on_ = false; this._send({ command: 'stop' }); }
     close() { this.closed = true; clearTimeout(this.retry); if (this.sock) this.sock.destroy(); }

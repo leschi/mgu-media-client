@@ -1,9 +1,9 @@
 {
   "id": "mgu-media-airplay",
   "kind": "tool",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "title": "Media Client AirPlay",
-  "description": "The AirPlay receiver of Media Client (screen mirroring, YouTube, music from an iPhone, iPad or Mac)",
+  "description": "The AirPlay receiver of Media Client (screen mirroring, YouTube, music from an iPhone, iPad or Mac) and the sound of the films",
   "mguHmi": ["ID7"],
   "optional": true,
   "uninstallable": true,

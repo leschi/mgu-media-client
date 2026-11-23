@@ -408,6 +408,10 @@ class ClusterVideo {
         const dir = this.o.tmp || '/tmp';
         const lead = this.buf ? Math.max(LEAD_NO_BUFFER, Math.min(LEAD_MAX, (this.o.bufferS || 600) - 10)) : LEAD_NO_BUFFER;
         const au = this.audio;
+        if (this.o.air && this.o.air.here()) {
+            if (await this._audioOwn(a, sound) || !this.running) return;
+            this._event("sound: BMW's player instead");
+        }
         try {
             au.state = 'fetching';
             au.chunks = new Map();              // segment -> its sound (from the file's first segment on)
@@ -471,6 +475,66 @@ class ClusterVideo {
             au.state = 'error: ' + (e && e.message || e);
             this._event('sound: ' + au.state);
         }
+    }
+
+    /** the sound by the app's own player (./ownsound); false: it does not play (BMW's player then) */
+    async _audioOwn(a, sound) {
+        const au = this.audio, { OwnSound } = require('./ownsound');
+        let s = null;
+        try {
+            au.state = 'fetching';
+            const tag = await Promise.race([Promise.resolve(this.o.tag).catch(() => null), new Promise((r) => setTimeout(() => r(null), 5000))]);
+            let i = 0;
+            const more = async () => {
+                if (i >= a.segs.length) { if (a.ended) return false; await this._refresh(); await new Promise((r) => setTimeout(r, 1000)); return true; }
+                const b = await sound(i);
+                if (!b && i === 0) throw new Error('no sound in the stream');
+                if (b && s && !s.closed) s.add(b);
+                else if (b) early.push(b);
+                au.segs = ++i;
+                return true;
+            };
+            const early = [];
+            while (this.running && i < AUDIO_LEAD && await more()) { /* the first pieces */ }
+            if (!this.running) return true;
+            au.state = 'starting';
+            const last = a.segs[a.segs.length - 1];
+            s = new OwnSound({ sig: this.o.sig, air: this.o.air, tag, length: last ? last.t + last.dur : 0, add: (l) => this._event(l) });
+            s.on('time', (ms) => {
+                if (!this.running) return;
+                au.state = this.paused ? 'paused' : 'playing';
+                au.line = 'time ' + ms + ', ' + au.segs + '/' + a.segs.length + ' segments' + (s.cardState ? ', title ' + s.cardState : '');
+                this._sync(ms);
+            });
+            await s.open();
+            if (!this.running) { s.close().catch(() => {}); return true; }
+            au.media = s;
+            early.forEach((b) => s.add(b));
+            early.length = 0;
+            const started = Date.now();
+            while (this.running && !s.playing && Date.now() - started < 6000) await new Promise((r) => setTimeout(r, 100));
+            if (!this.running) return true;
+            if (!s.playing) throw new Error(s.error || 'the own player does not start');
+            if (this.queue.length && !this.clock0) this.clock0 = Date.now();
+            const watch = setInterval(() => {
+                if (!this.running || au.media !== s) return clearInterval(watch);
+                return s.problem().then((x) => { if (x && x !== au.problem) this._event('sound: ' + x); au.problem = x; }, () => {});
+            }, 2000);
+        } catch (e) {
+            this._event('own sound: ' + (e && e.message || e));
+            if (au.media === s) au.media = null;
+            if (s) await s.close().catch(() => {});
+            return !this.running;
+        }
+        // (the rest ahead of the picture; a piece that does not come is asked for again)
+        const lead = this.buf ? Math.max(LEAD_NO_BUFFER, Math.min(LEAD_MAX, (this.o.bufferS || 600) - 10)) : LEAD_NO_BUFFER;
+        let i = au.segs;
+        while (this.running && au.media === s && (i < a.segs.length || !a.ended)) {
+            if (i >= a.segs.length) { await this._refresh(); await new Promise((r) => setTimeout(r, 1000)); continue; }
+            if (a.segs[i].t - this.position() > lead) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+            try { const b = await sound(i); if (b && !s.closed) s.add(b); au.segs = ++i; } catch (e) { this._event('sound segment ' + i + ': ' + e.message); await new Promise((r) => setTimeout(r, 2000)); }
+        }
+        return true;
     }
 
     /**

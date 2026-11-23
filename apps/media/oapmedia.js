@@ -48,7 +48,10 @@ async function connectSource(sig, add, opts) {
     const own = arr(lists[2]).filter((c) => c.sinkID === sinkId && c.sourceID === src.sourceID);
     for (const c of own) {
         await call(am, 'disconnect', { mainConnectionID: c.mainConnectionID }).then((x) => add('am: old connection ' + c.mainConnectionID + ' (' + c.connectionState + ') ended: ' + oneLine(JSON.stringify(x), 40)), (e) => add('am: old connection: ' + e.message));
-        await w(500);
+        for (let k = 0; k < 15; k++) {
+            await w(200);
+            if (!arr(await call(am, 'getListMainConnections')).some((x) => x.mainConnectionID === c.mainConnectionID)) break;
+        }
     }
     const prev = arr(lists[2]).find((c) => c.sinkID === sinkId && c.sourceID !== src.sourceID) || null;
     const good = (x) => !!x && (x.amError === undefined || x.amError === 'E_OK' || x.amError === 0);
@@ -59,6 +62,15 @@ async function connectSource(sig, add, opts) {
         r = await call(am, 'connect', { sourceID: src.sourceID, sinkID: sinkId });
     }
     const conn = good(r) ? r.mainConnectionID : null;
+    // the sound goes to nobody until the connection stands (as PllanaCast: up to a few seconds)
+    let cs = '';
+    for (let k = 0; conn != null && k < 30; k++) {
+        const c = arr(await call(am, 'getListMainConnections')).find((x) => x.mainConnectionID === conn);
+        cs = c ? c.connectionState : 'gone';
+        if (c && (cs === undefined || cs === 'CS_CONNECTED' || cs === 2)) break;
+        await w(100);
+    }
+    if (conn != null) add('am: connection ' + conn + ' ' + cs);
     add('am: ' + (prev ? 'source ' + prev.sourceID + ' was on sink ' + sinkId + '; ' : '') + 'connect ' + src.sourceID + ' -> ' + sinkId + ': ' + oneLine(JSON.stringify(r), 60));
 
     const release = async () => {
@@ -85,12 +97,24 @@ async function connectSource(sig, add, opts) {
  * isn't there; then nothing was connected.
  */
 async function openMedia(sig, add, opts) {
-    const { call, w, prev, sinkId, conn, release, problem } = await connectSource(sig, add, opts);
+    const src = await connectSource(sig, add, opts);
+    let m;
+    try { m = await openPlayer(sig, src); } catch (e) { await src.release(); throw e; }
+    m.close = async () => {
+        if (m.closed) return;
+        m.closed = true;
+        await m.button('PAUSE').catch(() => {});
+        await src.release();
+    };
+    return m;
+}
+
+/** BMW's player alone, on a connection of connectSource */
+async function openPlayer(sig, src) {
+    const { call, w, prev, sinkId, conn, problem } = src;
     const m = { sig, call, prev, sinkId, conn, problem, closed: false };
-    try {
-        m.mp = await withTimeout(sig.proxy(MP, 'OapGenericMedia'), 8000, 'proxy MP');
-        await waitAvailable(sig, m.mp, 10000);
-    } catch (e) { await release(); throw e; }
+    m.mp = await withTimeout(sig.proxy(MP, 'OapGenericMedia'), 8000, 'proxy MP');
+    await waitAvailable(sig, m.mp, 10000);
 
     m.get = (f) => withTimeout(new Promise((res) => setImmediate(() => res(m.mp.getValue(f, 3000)))), 4000, f)
         .then((v) => oneLine(JSON.stringify(v), 160), (e) => 'error ' + oneLine(e && e.message, 60));
@@ -107,13 +131,7 @@ async function openMedia(sig, add, opts) {
         }
         return { answer, playing, state };
     };
-    m.close = async () => {
-        if (m.closed) return;
-        m.closed = true;
-        await m.button('PAUSE').catch(() => {});
-        await release();
-    };
     return m;
 }
 
-module.exports = { openMedia, connectSource, waitAvailable, withTimeout, oneLine };
+module.exports = { openMedia, openPlayer, connectSource, waitAvailable, withTimeout, oneLine };

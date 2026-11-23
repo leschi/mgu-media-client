@@ -5,7 +5,8 @@
  * socket (./airplay). The receiver (tools/airplay/src/receiver.c) writes its frames as I420 into a
  * /dev/shm file (MGVF, as ./shmvideo) and its sound to BMW's SmartX sink, and tells what happens in lines.
  *
- *   commands (JSON lines): start { w, h, name }, viewport { w, h }, endVideo, stop, beat
+ *   commands (JSON lines): start { w, h, name }, viewport { w, h }, endVideo, stop, beat,
+ *     sound { op: start | add | pause | play | stop, id, file } -> { sound: { id, playing | ms | error | ended } }
  *   answers: { state: { phase, mode, connected, code, file, frame, error } }
  */
 const cp = require('child_process');
@@ -147,6 +148,44 @@ function stop() {
     });
 }
 
+/* ---------------- a film's sound (`mgu-airplay sound`) ---------------- */
+let snd = null;
+const PIECE = /^\/tmp\/mgu-media-snd-[\w-]+\.aac$/;
+function soundTell(o) { if (client && !client.destroyed && client.bufferSize < 32768) client.write(JSON.stringify({ sound: o }) + '\n'); }
+function soundStop() {
+    const c = snd;
+    snd = null;
+    if (!c) return;
+    c.stdin.end();
+    setTimeout(() => { try { c.kill('SIGKILL'); } catch (e) { /* ended */ } }, 1000);
+}
+function soundStart(id) {
+    soundStop();
+    if (!fs.existsSync(BIN)) { soundTell({ id, error: 'the receiver is missing' }); return; }
+    const c = snd = cp.spawn(BIN, ['sound'], { cwd: DATA, stdio: ['pipe', 'pipe', 'inherit'], env: Object.assign({}, process.env, { ALSA_PLUGIN_DIR: '/usr/lib/alsa-lib' }) });
+    c.stdin.on('error', () => {});
+    let buf = '';
+    c.stdout.on('data', (d) => {
+        if (snd !== c) return;
+        buf = (buf + d).slice(-4096);
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+            const m = /^(playing|time|error) ?(.*)$/.exec(buf.slice(0, i).trim());
+            buf = buf.slice(i + 1);
+            if (m) soundTell(m[1] === 'time' ? { id, ms: +m[2] } : m[1] === 'error' ? { id, error: m[2].slice(0, 120) } : { id, playing: true });
+        }
+    });
+    const over = (why) => { if (snd === c) { snd = null; soundTell({ id, ended: true, error: why }); } };
+    c.on('error', (e) => over(e.message));
+    c.on('close', (rc, sig) => over('the player ended (' + (sig || rc) + ')'));
+}
+function sound(r) {
+    if (r.op === 'start') soundStart(+r.id || 0);
+    else if (r.op === 'stop') soundStop();
+    else if (snd && r.op === 'add' && PIECE.test(r.file)) snd.stdin.write('add ' + r.file + '\n');
+    else if (snd && (r.op === 'pause' || r.op === 'play')) snd.stdin.write(r.op + '\n');
+}
+
 /* ---------------- the app's socket ---------------- */
 function command(r) {
     if (r.command === 'start') {
@@ -157,6 +196,7 @@ function command(r) {
     } else if (r.command === 'viewport') viewport(r.w, r.h);
     else if (r.command === 'endVideo') { if (state.mode === 'video') tell('end'); }
     else if (r.command === 'stop') stop();
+    else if (r.command === 'sound') sound(r);
 }
 try { if (fs.lstatSync(SOCK).isSocket()) fs.unlinkSync(SOCK); } catch (e) { /* none */ }
 const server = net.createServer((s) => {
@@ -183,6 +223,7 @@ const server = net.createServer((s) => {
     s.on('close', () => {
         if (client !== s) return;
         client = null;
+        soundStop();
         clearTimeout(graceT);
         graceT = setTimeout(() => { if (!client) stop(); }, GRACE_MS);
     });
@@ -196,6 +237,7 @@ let byeing = false;
 function bye(rc) {
     if (byeing) return;
     byeing = true;
+    soundStop();
     server.close();
     const out = () => { if (id(SOCK) === sock0) try { fs.unlinkSync(SOCK); } catch (e) { /* gone */ } process.exit(rc); };
     stop().then(out);

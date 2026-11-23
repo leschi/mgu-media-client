@@ -11,6 +11,8 @@
  *
  * stdout, a line each: connected 0|1, mode none|mirror|video|audio, loading, playing, error TEXT.
  * stdin: size W H (a URL video's largest size), end (end the URL video); its end: quit.
+ *
+ *   mgu-airplay sound     plays a film's sound (see sound_main)
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -1097,8 +1099,114 @@ static int features(bool hls)
     return 0;
 }
 
+/* ---------------- `mgu-airplay sound`: a film's sound ----------------
+ * stdin: add FILE (AAC in ADTS, the next piece; removed once read), pause, play; its end: quit.
+ * stdout: playing (the sink took it), time MS (heard so far), error TEXT. */
+static struct { pthread_mutex_t mx; char *f[4096]; unsigned in, out; bool paused, quit; } so = { .mx = PTHREAD_MUTEX_INITIALIZER };
+static void *sound_in(void *arg)
+{
+    (void)arg;
+    char l[512];
+    while (fgets(l, sizeof l, stdin)) {
+        l[strcspn(l, "\r\n")] = 0;
+        pthread_mutex_lock(&so.mx);
+        if (!strncmp(l, "add ", 4)) { if (so.in - so.out < 4096) so.f[so.in++ % 4096] = strdup(l + 4); }
+        else if (!strcmp(l, "pause")) so.paused = true;
+        else if (!strcmp(l, "play")) so.paused = false;
+        pthread_mutex_unlock(&so.mx);
+    }
+    pthread_mutex_lock(&so.mx);
+    so.quit = true;
+    pthread_mutex_unlock(&so.mx);
+    return NULL;
+}
+static int64_t so_sent, so_said;            /* samples written; when the time was told */
+static bool so_on;
+static void sound_time(void)
+{
+    if (!so_on || now_ns() - so_said < 250 * MS) return;
+    so_said = now_ns();
+    const int64_t t = so_sent * 1000 / RATE - snd_delay() / MS;
+    say("time %lld", (long long)(t > 0 ? t : 0));
+}
+/* waits while paused; false: quit */
+static bool sound_go(void)
+{
+    for (bool held = false;;) {
+        pthread_mutex_lock(&so.mx);
+        const bool p = so.paused, q = so.quit;
+        pthread_mutex_unlock(&so.mx);
+        if (q) return false;
+        if (!p) return true;
+        if (!held) { held = true; so_sent -= snd_delay() * RATE / 1000000000LL; snd_down(); }
+        nap(20 * MS);
+    }
+}
+static int sound_main(void)
+{
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    signal(SIGPIPE, SIG_IGN);
+    av_log_set_level(AV_LOG_QUIET);
+    pthread_t t;
+    pthread_create(&t, NULL, sound_in, NULL);
+    const AVCodec *c = avcodec_find_decoder(AV_CODEC_ID_AAC);
+    AVCodecContext *x = avcodec_alloc_context3(c);
+    AVCodecParserContext *ps = av_parser_init(AV_CODEC_ID_AAC);
+    AVPacket *k = av_packet_alloc();
+    AVFrame *f = av_frame_alloc();
+    SwrContext *swr = NULL;
+    int16_t *buf = NULL;
+    int cap = 0;
+    if (!ps || avcodec_open2(x, c, NULL) < 0) { say("error no AAC decoder"); return 1; }
+    while (sound_go()) {
+        pthread_mutex_lock(&so.mx);
+        char *name = so.out != so.in ? so.f[so.out++ % 4096] : NULL;
+        pthread_mutex_unlock(&so.mx);
+        if (!name) { sound_time(); nap(20 * MS); continue; }
+        uint8_t *d = NULL;
+        long n = 0;
+        FILE *in = fopen(name, "rb");
+        if (in) {
+            fseek(in, 0, SEEK_END);
+            n = ftell(in);
+            rewind(in);
+            if (n > 0 && n < (64 << 20) && (d = calloc(1, (size_t)n + AV_INPUT_BUFFER_PADDING_SIZE))) n = (long)fread(d, 1, (size_t)n, in);
+            fclose(in);
+        }
+        if (!d) say("error a piece of the sound is not readable (%d)", errno);
+        unlink(name);
+        free(name);
+        for (long at = 0; d && at < n;) {
+            uint8_t *o = NULL;
+            int ol = 0;
+            const int used = av_parser_parse2(ps, x, &o, &ol, d + at, (int)(n - at), AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+            if (used < 0) break;
+            at += used;
+            if (!ol) { if (!used) break; continue; }
+            k->data = o; k->size = ol;
+            if (avcodec_send_packet(x, k) < 0) continue;
+            while (avcodec_receive_frame(x, f) >= 0) {
+                const int m = to_s16(&swr, f, &buf, &cap);
+                if (m <= 0) continue;
+                for (;;) {
+                    if (!sound_go()) _exit(0);
+                    if (snd_write(buf, m)) break;
+                    nap(200 * MS);
+                }
+                if (!so_on) { so_on = true; say("playing"); }
+                so_sent += m;
+                sound_time();
+            }
+        }
+        free(d);
+    }
+    snd_down();
+    _exit(0);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "sound")) return sound_main();
     char name[64] = "BMW MGU", mac[18] = "", key[160] = "";
     const char *test_url = NULL;
     int o, port = 7110;
